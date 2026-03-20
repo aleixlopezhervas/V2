@@ -17,7 +17,8 @@ class LauncherApp:
         self.processes = {
             'local': None,       # DashboardLocalPython
             'autopilot': None,   # AutopilotService
-            'global': None       # DashboardGlobalPython
+            'global': None,      # DashboardGlobalPython
+            'camera': None       # CameraService
         }
 
         # Buttons
@@ -75,6 +76,8 @@ class LauncherApp:
     def start_local(self):
         # Start DashboardLocalPython.py
         self._start_process('local', 'DashboardLocalPython.py')
+        # Ensure CameraService is running for local mode
+        self._start_process('camera', 'CameraService.py')
 
     def start_global(self):
         # Start AutopilotService first, then DashboardGlobalPython
@@ -86,6 +89,8 @@ class LauncherApp:
 
         # Start global dashboard
         self._start_process('global', 'DashboardGlobalPython.py')
+        # Ensure CameraService is running for global mode as well
+        self._start_process('camera', 'CameraService.py')
 
     def _terminate_process(self, p, name):
         if not p:
@@ -115,7 +120,7 @@ class LauncherApp:
     def stop_all(self):
         # Terminate the three managed processes if running
         self._log('Iniciando parada de todos los procesos...')
-        for key in ('local', 'global', 'autopilot'):
+        for key in ('local', 'global', 'autopilot', 'camera'):
             p = self.processes.get(key)
             try:
                 self._terminate_process(p, key)

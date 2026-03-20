@@ -4,7 +4,7 @@ import tkinter as tk
 from dronLink.Dron import Dron
 import paho.mqtt.client as mqtt
 
-usuario = "elies"
+usuario = "aleix"
 def restart ():
     time.sleep (5)
 
@@ -154,8 +154,9 @@ def crear_ventana():
     client.ws_set_options(path="/mqtt")
 
     # me conecto al broker publico y gratuito
-    broker_address = "broker.hivemq.com"
+    broker_address = "dronseetac.upc.edu"
     broker_port = 8000
+    client.username_pw_set("dronsEETAC", "mimara1456.")
 
     client.on_message = on_message
     client.on_connect = on_connect

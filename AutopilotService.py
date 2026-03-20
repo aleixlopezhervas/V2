@@ -6,7 +6,7 @@ import paho.mqtt.client as mqtt
 import json
 from dronLink.Dron import Dron
 
-usuario = "elies"
+usuario = "aleix"
 
 # esta función sirve para publicar los eventos resultantes de las acciones solicitadas
 def publish_event (event):
@@ -91,8 +91,9 @@ dron = Dron()
 client = mqtt.Client(f"Servicio_{usuario}", transport="websockets")
 
 # me conecto al broker publico y gratuito
-broker_address = "broker.hivemq.com"
+broker_address = "dronseetac.upc.edu"
 broker_port = 8000
+client.username_pw_set("dronsEETAC", "mimara1456.")
 
 client.on_message = on_message
 client.on_connect = on_connect

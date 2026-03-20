@@ -66,15 +66,27 @@
     </div>
 
     <script>
-        const usuario = "elies"
+        const usuario = "aleix"
+        // Broker configuration: replace with your broker settings
+        const BROKER_HOST = 'dronseetac.upc.edu';
+        const BROKER_PORT = 8000; // cambiar a 1883 si usas MQTT nativo, pero en navegador suele ser WebSockets
+        const BROKER_PROTOCOL = 'ws'; // 'ws' o 'wss' (wss = WebSocket seguro)
+        const BROKER_PATH = '/mqtt';
+        const BROKER_USERNAME = 'dronsEETAC';
+        const BROKER_PASSWORD = 'mimara1456.';
+
+        const brokerUrl = `${BROKER_PROTOCOL}://${BROKER_HOST}:${BROKER_PORT}${BROKER_PATH}`;
         var despegueIniciado = false;
         var aterrizajeIniciado = false;
         var rtlIniciado = false;
 
-        const client = mqtt.connect('ws://broker.hivemq.com:8000/mqtt', {
+        console.log('Conectando al broker MQTT en', brokerUrl);
+        const client = mqtt.connect(brokerUrl, {
             clean: false,
             keepalive: 60,
             clientId: 'webapp_' + usuario + Math.random().toString(16).substr(2, 8),
+            username: BROKER_USERNAME,
+            password: BROKER_PASSWORD,
         });
 
         client.on('connect', () => {

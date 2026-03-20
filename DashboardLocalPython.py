@@ -458,6 +458,110 @@ def crear_ventana():
             map_widget.set_zoom(16)
             # center initially at 0,0
             map_widget.set_position(0, 0)
+
+            # Map click -> goto handler
+            def _on_map_click(data):
+                # data can be (lat, lon) or an object depending on tkintermapview version
+                try:
+                    if isinstance(data, (list, tuple)):
+                        lat, lon = float(data[0]), float(data[1])
+                    else:
+                        # try common attributes
+                        lat = getattr(data, 'lat', None) or getattr(data, 'latitude', None) or getattr(data, 'y', None)
+                        lon = getattr(data, 'lng', None) or getattr(data, 'longitude', None) or getattr(data, 'x', None)
+                        lat = float(lat)
+                        lon = float(lon)
+                except Exception:
+                    # some versions call with an event; try to convert pixel->geo
+                    try:
+                        # data may be a Tk event with x/y
+                        ex = getattr(data, 'x', None)
+                        ey = getattr(data, 'y', None)
+                        if ex is not None and ey is not None:
+                            try:
+                                lat, lon = map_widget.get_position(ex, ey)
+                            except Exception:
+                                lat, lon = map_widget.convert_canvas_coords_to_decimal_coords(ex, ey)
+                        else:
+                            return
+                    except Exception:
+                        return
+
+                # Use current drone altitude if available, else fallback to altitude slider or 10m
+                try:
+                    current_alt = None
+                    try:
+                        current_alt = float(dron.alt)
+                    except Exception:
+                        current_alt = None
+                    if current_alt is None or current_alt == 0:
+                        try:
+                            current_alt = float(altitudeSldr.get())
+                        except Exception:
+                            current_alt = 10.0
+                except Exception:
+                    current_alt = 10.0
+
+                # Send goto command (non-blocking)
+                try:
+                    dron.goto(lat, lon, current_alt, blocking=False)
+                    # brief feedback in UI: show coords in a small overlay on the map for 1s
+                    try:
+                        # remove previous overlay if present
+                        if hasattr(map_widget, '_coord_overlay') and map_widget._coord_overlay:
+                            try:
+                                map_widget._coord_overlay.destroy()
+                            except Exception:
+                                pass
+                        overlay = tk.Label(right_frame, text=f'{lat:.6f}, {lon:.6f}', bg='white', fg='black', bd=1, relief=tk.SOLID)
+                        # place overlay near top-left of map (small margin)
+                        overlay.place(relx=0.02, rely=0.02)
+                        map_widget._coord_overlay = overlay
+                        # destroy after 1 second
+                        overlay.after(1000, lambda: (overlay.destroy(), setattr(map_widget, '_coord_overlay', None)))
+                        try:
+                            stateShowLbl['text'] = f'GOTO -> {round(lat,6)},{round(lon,6)}'
+                        except Exception:
+                            pass
+                    except Exception:
+                        pass
+                except Exception as e:
+                    # show inline error instead of modal dialog
+                    try:
+                        err_lbl = tk.Label(right_frame, text=f'Error goto: {e}', bg='white', fg='red', bd=1, relief=tk.SOLID)
+                        err_lbl.place(relx=0.02, rely=0.02)
+                        err_lbl.after(2000, lambda: err_lbl.destroy())
+                    except Exception:
+                        pass
+
+            # Register click handler - try official API first, then fallbacks
+            try:
+                if hasattr(map_widget, 'add_left_click_map_command'):
+                    map_widget.add_left_click_map_command(_on_map_click)
+                elif hasattr(map_widget, 'add_left_click_map_callback'):
+                    map_widget.add_left_click_map_callback(_on_map_click)
+                else:
+                    # fallback: bind canvas click and convert pixels to geo
+                    cvs = getattr(map_widget, 'canvas', None) or getattr(map_widget, 'map_canvas', None)
+                    if cvs:
+                        def _pixel_click(evt):
+                            try:
+                                # try map_widget.get_position(x,y)
+                                latlon = None
+                                try:
+                                    latlon = map_widget.get_position(evt.x, evt.y)
+                                except Exception:
+                                    try:
+                                        latlon = map_widget.convert_canvas_coords_to_decimal_coords(evt.x, evt.y)
+                                    except Exception:
+                                        latlon = None
+                                if latlon:
+                                    _on_map_click(latlon)
+                            except Exception:
+                                pass
+                        cvs.bind('<Button-1>', _pixel_click)
+            except Exception:
+                pass
         except Exception as e:
             tk.Label(right_frame, text=f'Error iniciando mapa: {e}').pack(fill=tk.BOTH, expand=True)
     else:

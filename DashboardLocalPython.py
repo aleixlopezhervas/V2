@@ -156,7 +156,7 @@ def showTelemetryInfo(telemetry_info):
     try:
         now = time.time()
         path_points.append((lat, lon, now))
-        cutoff = now - 5.0
+        cutoff = now - 10.0
         path_points = [p for p in path_points if p[2] >= cutoff]
         # remove old segments
         try:
@@ -193,7 +193,7 @@ def showTelemetryInfo(telemetry_info):
     # Draw heading line
     try:
         if heading is not None:
-            dist_m = 15.0
+            dist_m = 5.0
             theta = math.radians(float(heading))
             dy = dist_m * math.cos(theta)
             dx = dist_m * math.sin(theta)

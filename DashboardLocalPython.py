@@ -45,7 +45,7 @@ def inTheAir ():
 
 def takeoff ():
     global dron
-
+    # Pedir la altitud deseada
     altitude = simpledialog.askfloat(
         "Altitud de despegue",
         "Introduce la altitud en metros:\n(Rango: 1-100m)",
@@ -56,13 +56,33 @@ def takeoff ():
     # Si el usuario cancela el diálogo, no hacemos nada
     if altitude is None:
         return
-    # despegamos a una altura de 5 metros
-    # llamada no bloqueante. Cuando alcance la altura indicada ejecutará la función inTheAir
-    alt_int = int (altitude)
-    dron.takeOff (alt_int, blocking = False,  callback = inTheAir)
-    takeOffBtn['text'] = 'Despegando...'
-    takeOffBtn['fg'] = 'black'
-    takeOffBtn['bg'] = 'yellow'
+
+    # Primero intentamos armar el dron
+    try:
+        dron.arm()
+        armBtn['text'] = 'Armado'
+        armBtn['fg'] = 'white'
+        armBtn['bg'] = 'green'
+    except Exception as e:
+        # Mostrar advertencia si el arming falla, pero seguimos intentando el despegue
+        try:
+            message = str(e)
+        except Exception:
+            message = 'Error al armar.'
+        # No usar messagebox en callbacks que puedan ser llamados desde hilos; aquí es UI thread
+        from tkinter import messagebox
+        messagebox.showwarning('Armar fallo', f'No se pudo armar el dron: {message}')
+
+    # Realizar el despegue a la altitud indicada (no bloqueante)
+    alt_int = int(altitude)
+    try:
+        dron.takeOff(alt_int, blocking=False, callback=inTheAir)
+        takeOffBtn['text'] = 'Despegando...'
+        takeOffBtn['fg'] = 'black'
+        takeOffBtn['bg'] = 'yellow'
+    except Exception as e:
+        from tkinter import messagebox
+        messagebox.showerror('Takeoff fallo', f'No se pudo iniciar el despegue: {e}')
 
 def onLanded():
     landBtn['text'] = 'En tierra'

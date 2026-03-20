@@ -3,8 +3,23 @@
 ###############################
 
 import tkinter as tk
-from tkinter import simpledialog
+from tkinter import simpledialog, messagebox
 from dronLink.Dron import Dron
+
+# Optional map support using tkintermapview. If not installed, we show an instruction.
+try:
+    from tkintermapview import TkinterMapView
+    MAP_AVAILABLE = True
+except Exception:
+    TkinterMapView = None
+    MAP_AVAILABLE = False
+
+# Globals for map and drone marker
+map_widget = None
+drone_marker = None
+path_points = []
+path_obj = None
+map_centered = False
 
 
 
@@ -16,10 +31,60 @@ def showTelemetryInfo (telemetry_info):
     stateShowLbl['text'] = telemetry_info['state']
     speedShowLbl['text'] = round(telemetry_info['groundSpeed'],2)
 
+    # If telemetry contains lat/lon and map is available, update the marker
+    try:
+        lat = telemetry_info.get('lat') if isinstance(telemetry_info, dict) else None
+        lon = telemetry_info.get('lon') if isinstance(telemetry_info, dict) else None
+        global map_widget, drone_marker, path_points, path_obj, map_centered
+        if MAP_AVAILABLE and map_widget is not None and lat is not None and lon is not None:
+            # Update or create marker
+            if drone_marker is None:
+                drone_marker = map_widget.set_marker(lat, lon, text='Drone')
+            else:
+                try:
+                    drone_marker.set_position(lat, lon)
+                except Exception:
+                    try:
+                        drone_marker.delete()
+                    except Exception:
+                        pass
+                    drone_marker = map_widget.set_marker(lat, lon, text='Drone')
+
+            # Append to path and update a polyline
+            try:
+                point = (lat, lon)
+                path_points.append(point)
+                # Keep the path reasonably sized
+                if len(path_points) > 500:
+                    path_points = path_points[-500:]
+                if path_obj is None:
+                    path_obj = map_widget.set_path(path_points)
+                else:
+                    # update by recreating path (tkintermapview doesn't have simple update API)
+                    try:
+                        path_obj.delete()
+                    except Exception:
+                        pass
+                    path_obj = map_widget.set_path(path_points)
+            except Exception:
+                pass
+
+            # Center map the first time we get a fix
+            if not map_centered:
+                try:
+                    map_widget.set_position(lat, lon)
+                    map_centered = True
+                except Exception:
+                    pass
+    except Exception:
+        # keep UI resilient
+        pass
+
 
 def connect ():
     global dron, speedSldr
-    connection_string ='tcp:127.0.0.1:5763'
+    # connect to MAVProxy TCP output (use 5770 for local dashboard)
+    connection_string = 'tcp:127.0.0.1:5763'
     baud = 115200
     dron.connect(connection_string,baud)
     # cambiamos el color del boton
@@ -168,53 +233,49 @@ def crear_ventana():
 
     ventana = tk.Tk()
     ventana.title("Dashboard con conexión directa")
-    # la interfaz tiene 10 filas y dos columnas
-    ventana.rowconfigure(0, weight=1)
-    ventana.rowconfigure(1, weight=1)
-    ventana.rowconfigure(2, weight=1)
-    ventana.rowconfigure(3, weight=1)
-    ventana.rowconfigure(4, weight=1)
-    ventana.rowconfigure(5, weight=1)
-    ventana.rowconfigure(6, weight=1)
-    ventana.rowconfigure(7, weight=1)
-    ventana.rowconfigure(8, weight=1)
-    ventana.columnconfigure(0, weight=1)
+
+    # Create left frame for controls and right frame for map
+    left_frame = tk.Frame(ventana)
+    right_frame = tk.Frame(ventana, width=400, height=600)
+    left_frame.grid(row=0, column=0, rowspan=10, sticky=tk.N + tk.S + tk.E + tk.W)
+    right_frame.grid(row=0, column=1, rowspan=10, sticky=tk.N + tk.S + tk.E + tk.W)
+    ventana.columnconfigure(0, weight=3)
     ventana.columnconfigure(1, weight=1)
 
     # Disponemos los botones, indicando qué función ejecutar cuando se clica cada uno de ellos
     # Los tres primeros ocupan las dos columnas de la fila en la que se colocan
-    connectBtn = tk.Button(ventana, text="Conectar", bg="dark orange", command = connect)
+    connectBtn = tk.Button(left_frame, text="Conectar", bg="dark orange", command = connect)
     connectBtn.grid(row=0, column=0, columnspan=2, padx=5, pady=5, sticky=tk.N + tk.S + tk.E + tk.W)
 
-    armBtn = tk.Button(ventana, text="Armar", bg="dark orange", command=arm)
+    armBtn = tk.Button(left_frame, text="Armar", bg="dark orange", command=arm)
     armBtn.grid(row=1, column=0, columnspan=2, padx=5, pady=5, sticky=tk.N + tk.S + tk.E + tk.W)
 
-    takeOffBtn = tk.Button(ventana, text="Despegar", bg="dark orange", command=takeoff)
+    takeOffBtn = tk.Button(left_frame, text="Despegar", bg="dark orange", command=takeoff)
     takeOffBtn.grid(row=2, column=0, columnspan=2, padx=5, pady=5, sticky=tk.N + tk.S + tk.E + tk.W)
 
     # Slider para seleccionar el heading
-    gradesSldr = tk.Scale(ventana, label="Grados:", resolution=5, from_=0, to=360, tickinterval=45,
+    gradesSldr = tk.Scale(left_frame, label="Grados:", resolution=5, from_=0, to=360, tickinterval=45,
                               orient=tk.HORIZONTAL)
     gradesSldr.grid(row=3, column=0, columnspan=2,padx=5, pady=5, sticky=tk.N + tk.S + tk.E + tk.W)
     gradesSldr.set(180)
     gradesSldr.bind("<ButtonRelease-1>", changeHeading)
 
     # Slider para seleccionar la altitud
-    altitudeSldr = tk.Scale(ventana, label="Altitud (m):", resolution=1, from_=0, to=100, tickinterval=10,
+    altitudeSldr = tk.Scale(left_frame, label="Altitud (m):", resolution=1, from_=0, to=100, tickinterval=10,
                               orient=tk.HORIZONTAL)
     altitudeSldr.grid(row=4, column=0, columnspan=2, padx=5, pady=5, sticky=tk.N + tk.S + tk.E + tk.W)
     altitudeSldr.bind("<ButtonRelease-1>", changeAltitude)
 
     # los dos siguientes están en la misma fila están en la misma fila
-    landBtn = tk.Button(ventana, text="aterrizar", bg="dark orange", command=land)
+    landBtn = tk.Button(left_frame, text="aterrizar", bg="dark orange", command=land)
     landBtn.grid(row=5, column=0, padx=5, pady=5, sticky=tk.N + tk.S + tk.E + tk.W)
 
-    RTLBtn = tk.Button(ventana, text="RTL", bg="dark orange", command=RTL)
+    RTLBtn = tk.Button(left_frame, text="RTL", bg="dark orange", command=RTL)
     RTLBtn.grid(row=5, column=1, padx=5, pady=5, sticky=tk.N + tk.S + tk.E + tk.W)
 
     # este es el frame para la navegación. Pequeña matriz de 3 x 3 botones
     # con el valor de padx hacemos que se introduzca un espacio en blanco a la derecha,
-    navFrame = tk.LabelFrame (ventana, text = "Navegación")
+    navFrame = tk.LabelFrame (left_frame, text = "Navegación")
     navFrame.grid(row=6, column=0, columnspan = 2, padx=50, pady=5, sticky=tk.N + tk.S + tk.E + tk.W)
 
     navFrame.rowconfigure(0, weight=1)
@@ -267,21 +328,21 @@ def crear_ventana():
 
 
     # slider para elegir la velocidad de navegación
-    speedSldr = tk.Scale(ventana, label="Velocidad (m/s):", resolution=1, from_=0, to=20, tickinterval=5,
+    speedSldr = tk.Scale(left_frame, label="Velocidad (m/s):", resolution=1, from_=0, to=20, tickinterval=5,
                           orient=tk.HORIZONTAL)
     speedSldr.grid(row=7, column=0, columnspan=2, padx=5, pady=5, sticky=tk.N + tk.S + tk.E + tk.W)
     speedSldr.bind("<ButtonRelease-1>", changeNavSpeed)
 
     # botones para pedir/parar datos de telemetría
-    StartTelemBtn = tk.Button(ventana, text="Empezar a enviar telemetría", bg="dark orange", command=startTelem)
+    StartTelemBtn = tk.Button(left_frame, text="Empezar a enviar telemetría", bg="dark orange", command=startTelem)
     StartTelemBtn.grid(row=8, column=0, padx=5, pady=5, sticky=tk.N + tk.S + tk.E + tk.W)
 
-    StopTelemBtn = tk.Button(ventana, text="Parar de enviar telemetría", bg="dark orange", command=stopTelem)
+    StopTelemBtn = tk.Button(left_frame, text="Parar de enviar telemetría", bg="dark orange", command=stopTelem)
     StopTelemBtn.grid(row=8, column=1, padx=5, pady=5, sticky=tk.N + tk.S + tk.E + tk.W)
 
     # Este es el frame para mostrar los datos de telemetría
     # Contiene etiquetas para informar de qué datos son y los valores. Solo nos interesan 3 datos de telemetría
-    telemetryFrame = tk.LabelFrame(ventana, text="Telemetría")
+    telemetryFrame = tk.LabelFrame(left_frame, text="Telemetría")
     telemetryFrame.grid(row=9, column=0, columnspan=2, padx=10, pady=10, sticky=tk.N + tk.S + tk.E + tk.W)
 
     telemetryFrame.rowconfigure(0, weight=1)
@@ -317,6 +378,19 @@ def crear_ventana():
 
     speedShowLbl = tk.Label(telemetryFrame, text='')
     speedShowLbl.grid(row=1, column=3, padx=5, pady=5, sticky=tk.N + tk.S + tk.E + tk.W)
+
+    # Initialize map in right_frame
+    global map_widget, drone_marker
+    if MAP_AVAILABLE:
+        try:
+            map_widget = TkinterMapView(right_frame, width=400, height=600, corner_radius=0)
+            map_widget.pack(fill=tk.BOTH, expand=True)
+            map_widget.set_zoom(15)
+            drone_marker = None
+        except Exception as e:
+            tk.Label(right_frame, text=f'Error iniciando mapa: {e}').pack(fill=tk.BOTH, expand=True)
+    else:
+        tk.Label(right_frame, text='Instala tkintermapview:\npython -m pip install tkintermapview').pack(fill=tk.BOTH, expand=True)
 
     return ventana
 

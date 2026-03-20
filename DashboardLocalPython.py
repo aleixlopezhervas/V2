@@ -1,9 +1,11 @@
 ##########  INSTALAR ##########
-# pymavlink
+# pymavlink (opcional)
 ###############################
 
 import tkinter as tk
 from tkinter import simpledialog, messagebox
+import time
+import math
 from dronLink.Dron import Dron
 
 # Optional map support using tkintermapview. If not installed, we show an instruction.
@@ -14,379 +16,448 @@ except Exception:
     TkinterMapView = None
     MAP_AVAILABLE = False
 
-# Globals for map and drone marker
+# Optional Pillow for custom icon
+try:
+    from PIL import Image, ImageDraw, ImageTk
+    PIL_AVAILABLE = True
+except Exception:
+    Image = None
+    ImageDraw = None
+    ImageTk = None
+    PIL_AVAILABLE = False
+
+# Globals
 map_widget = None
 drone_marker = None
-path_points = []
-path_obj = None
-map_centered = False
+heading_line = None
+path_segments = []  # list of map path objects for fading trail
+path_points = []    # list of (lat, lon, timestamp)
+_marker_icon = None
+center_enabled = True
 
 
+def create_fire_circle_icon(size=20):
+    """Return a PhotoImage-like object representing a fire-red circle.
+    Use Pillow if available for higher quality; otherwise draw into a tk.PhotoImage.
+    """
+    global Image, ImageDraw, ImageTk
+    if 'Image' in globals() and Image is not None:
+        try:
+            img = Image.new('RGBA', (size, size), (0, 0, 0, 0))
+            draw = ImageDraw.Draw(img)
+            draw.ellipse((4, 4, size-5, size-5), fill=(255, 69, 0, 230))
+            return ImageTk.PhotoImage(img)
+        except Exception:
+            pass
 
-def showTelemetryInfo (telemetry_info):
-    global heading, altitude, groundSpeed, state
-    global altShowLbl, headingShowLbl, stateShowLbl, speedShowLbl
-    altShowLbl['text'] = round (telemetry_info['alt'],2)
-    headingShowLbl['text'] =  round(telemetry_info['heading'],2)
-    stateShowLbl['text'] = telemetry_info['state']
-    speedShowLbl['text'] = round(telemetry_info['groundSpeed'],2)
-
-    # If telemetry contains lat/lon and map is available, update the marker
-    try:
-        lat = telemetry_info.get('lat') if isinstance(telemetry_info, dict) else None
-        lon = telemetry_info.get('lon') if isinstance(telemetry_info, dict) else None
-        global map_widget, drone_marker, path_points, path_obj, map_centered
-        if MAP_AVAILABLE and map_widget is not None and lat is not None and lon is not None:
-            # Update or create marker
-            if drone_marker is None:
-                drone_marker = map_widget.set_marker(lat, lon, text='Drone')
+    # Fallback: draw circle into a tk.PhotoImage pixel-by-pixel
+    img = tk.PhotoImage(width=size, height=size)
+    cx = size // 2
+    cy = size // 2
+    r = (size - 8) // 2
+    # Precompute squared radius
+    r2 = r * r
+    for y in range(size):
+        row = []
+        dy = y - cy
+        for x in range(size):
+            dx = x - cx
+            if dx*dx + dy*dy <= r2:
+                row.append('#FF4500')
             else:
+                row.append('')
+        # PhotoImage put accepts lists; build a dict of pixels by column range
+        # We'll set pixels one by one to ensure compatibility
+        for x, color in enumerate(row):
+            if color:
                 try:
-                    drone_marker.set_position(lat, lon)
-                except Exception:
-                    try:
-                        drone_marker.delete()
-                    except Exception:
-                        pass
-                    drone_marker = map_widget.set_marker(lat, lon, text='Drone')
-
-            # Append to path and update a polyline
-            try:
-                point = (lat, lon)
-                path_points.append(point)
-                # Keep the path reasonably sized
-                if len(path_points) > 500:
-                    path_points = path_points[-500:]
-                if path_obj is None:
-                    path_obj = map_widget.set_path(path_points)
-                else:
-                    # update by recreating path (tkintermapview doesn't have simple update API)
-                    try:
-                        path_obj.delete()
-                    except Exception:
-                        pass
-                    path_obj = map_widget.set_path(path_points)
-            except Exception:
-                pass
-
-            # Center map the first time we get a fix
-            if not map_centered:
-                try:
-                    map_widget.set_position(lat, lon)
-                    map_centered = True
+                    img.put(color, (x, y))
                 except Exception:
                     pass
+    return img
+
+
+def showTelemetryInfo(telemetry_info):
+    """Called periodically with telemetry dict. Updates labels and map marker/path."""
+    global map_widget, drone_marker, heading_line, path_points, path_segments, _marker_icon, center_enabled
+
+    try:
+        alt = telemetry_info.get('alt')
+        heading = telemetry_info.get('heading')
+        groundSpeed = telemetry_info.get('groundSpeed')
+        state = telemetry_info.get('state')
     except Exception:
-        # keep UI resilient
+        return
+
+    # Update telemetry labels if present
+    try:
+        altShowLbl['text'] = '' if alt is None else round(alt, 2)
+        headingShowLbl['text'] = '' if heading is None else round(heading, 2)
+        stateShowLbl['text'] = '' if state is None else state
+        speedShowLbl['text'] = '' if groundSpeed is None else round(groundSpeed, 2)
+    except Exception:
+        pass
+
+    # Update map if available and telemetry contains lat/lon
+    if not MAP_AVAILABLE or map_widget is None:
+        return
+
+    lat = telemetry_info.get('lat') if isinstance(telemetry_info, dict) else None
+    lon = telemetry_info.get('lon') if isinstance(telemetry_info, dict) else None
+    if lat is None or lon is None:
+        return
+
+    # Create a small fire-red circular icon (cached in _marker_icon) if Pillow is available
+    global _marker_icon
+    # ensure we have a simple fire-circle icon (cached)
+    marker_icon = None
+    try:
+        if _marker_icon is None:
+            _marker_icon = create_fire_circle_icon(size=20)
+        marker_icon = _marker_icon
+    except Exception:
+        marker_icon = None
+
+    # Create or update marker
+    try:
+        if drone_marker is None:
+            if marker_icon is not None:
+                try:
+                    drone_marker = map_widget.set_marker(lat, lon, text='', icon=marker_icon)
+                except Exception:
+                    drone_marker = map_widget.set_marker(lat, lon, text='')
+                    try:
+                        drone_marker.set_icon(marker_icon)
+                    except Exception:
+                        pass
+                _marker_icon = marker_icon
+            else:
+                drone_marker = map_widget.set_marker(lat, lon, text='')
+        else:
+            try:
+                drone_marker.set_position(lat, lon)
+            except Exception:
+                try:
+                    drone_marker.delete()
+                except Exception:
+                    pass
+                if marker_icon is not None:
+                    try:
+                        drone_marker = map_widget.set_marker(lat, lon, text='', icon=marker_icon)
+                        _marker_icon = marker_icon
+                    except Exception:
+                        drone_marker = map_widget.set_marker(lat, lon, text='')
+                else:
+                    drone_marker = map_widget.set_marker(lat, lon, text='')
+    except Exception:
+        pass
+
+    # Maintain a time-based path of last 5 seconds
+    try:
+        now = time.time()
+        path_points.append((lat, lon, now))
+        cutoff = now - 5.0
+        path_points = [p for p in path_points if p[2] >= cutoff]
+        # remove old segments
+        try:
+            for s in path_segments:
+                try:
+                    s.delete()
+                except Exception:
+                    pass
+            path_segments.clear()
+        except Exception:
+            pass
+
+        # draw segments with fading color
+        for i in range(len(path_points)-1):
+            (lat1, lon1, t1) = path_points[i]
+            (lat2, lon2, t2) = path_points[i+1]
+            age = (now - t1) / 5.0
+            if age < 0: age = 0
+            if age > 1: age = 1
+            r1,g1,b1 = (255,140,0)
+            r2,g2,b2 = (255,220,180)
+            r=int(r1+(r2-r1)*age)
+            g=int(g1+(g2-g1)*age)
+            b=int(b1+(b2-b1)*age)
+            color = '#%02x%02x%02x' % (r,g,b)
+            try:
+                seg = map_widget.set_path([(lat1, lon1), (lat2, lon2)], color=color, width=3)
+            except Exception:
+                seg = map_widget.set_path([(lat1, lon1), (lat2, lon2)])
+            path_segments.append(seg)
+    except Exception:
+        pass
+
+    # Draw heading line
+    try:
+        if heading is not None:
+            dist_m = 15.0
+            theta = math.radians(float(heading))
+            dy = dist_m * math.cos(theta)
+            dx = dist_m * math.sin(theta)
+            delta_lat = (dy / 111320.0)
+            delta_lon = dx / (111320.0 * math.cos(math.radians(lat)) + 1e-12)
+            lat2 = lat + delta_lat
+            lon2 = lon + delta_lon
+            try:
+                if heading_line is not None:
+                    heading_line.delete()
+            except Exception:
+                pass
+            try:
+                heading_line = map_widget.set_path([(lat, lon), (lat2, lon2)], color='#00FF00', width=3)
+            except Exception:
+                heading_line = None
+    except Exception:
+        pass
+
+    # Center map if enabled
+    try:
+        if center_enabled:
+            map_widget.set_position(lat, lon)
+    except Exception:
         pass
 
 
-def connect ():
+def connect():
     global dron, speedSldr
-    # connect to MAVProxy TCP output (use 5770 for local dashboard)
     connection_string = 'tcp:127.0.0.1:5763'
     baud = 115200
-    dron.connect(connection_string,baud)
-    # cambiamos el color del boton
+    dron.connect(connection_string, baud)
     connectBtn['text'] = 'Conectado'
     connectBtn['fg'] = 'white'
     connectBtn['bg'] = 'green'
-    # fijamos la velocidad por defecto en el slider
     speedSldr.set(1)
 
-def arm ():
+
+def arm():
     global dron
     dron.arm()
     armBtn['text'] = 'Armado'
     armBtn['fg'] = 'white'
     armBtn['bg'] = 'green'
 
-def inTheAir ():
-    # ya ha alcanzado la altura de despegue
+
+def inTheAir():
     takeOffBtn['text'] = 'En el aire'
     takeOffBtn['fg'] = 'white'
     takeOffBtn['bg'] = 'green'
 
 
-def takeoff ():
+def takeoff():
     global dron
-    # Pedir la altitud deseada
-    altitude = simpledialog.askfloat(
-        "Altitud de despegue",
-        "Introduce la altitud en metros:\n(Rango: 1-100m)",
-        minvalue=1.0,
-        maxvalue=100.0
-    )
-
-    # Si el usuario cancela el diálogo, no hacemos nada
+    altitude = simpledialog.askfloat("Altitud de despegue", "Introduce la altitud en metros:\n(Rango: 1-100m)", minvalue=1.0, maxvalue=100.0)
     if altitude is None:
         return
-
-    # Primero intentamos armar el dron
     try:
         dron.arm()
         armBtn['text'] = 'Armado'
         armBtn['fg'] = 'white'
         armBtn['bg'] = 'green'
-    except Exception as e:
-        # Mostrar advertencia si el arming falla, pero seguimos intentando el despegue
-        try:
-            message = str(e)
-        except Exception:
-            message = 'Error al armar.'
-        # No usar messagebox en callbacks que puedan ser llamados desde hilos; aquí es UI thread
-        from tkinter import messagebox
-        messagebox.showwarning('Armar fallo', f'No se pudo armar el dron: {message}')
-
-    # Realizar el despegue a la altitud indicada (no bloqueante)
-    alt_int = int(altitude)
+    except Exception:
+        pass
     try:
-        dron.takeOff(alt_int, blocking=False, callback=inTheAir)
+        dron.takeOff(int(altitude), blocking=False, callback=inTheAir)
         takeOffBtn['text'] = 'Despegando...'
         takeOffBtn['fg'] = 'black'
         takeOffBtn['bg'] = 'yellow'
     except Exception as e:
-        from tkinter import messagebox
         messagebox.showerror('Takeoff fallo', f'No se pudo iniciar el despegue: {e}')
+
 
 def onLanded():
     landBtn['text'] = 'En tierra'
     landBtn['fg'] = 'white'
     landBtn['bg'] = 'green'
 
+
 def onRTLCompleted():
     RTLBtn['text'] = 'En tierra'
     RTLBtn['fg'] = 'white'
     RTLBtn['bg'] = 'green'
 
-def land ():
+
+def land():
     global dron
-    # llamada no bloqueante con callback
     dron.Land(blocking=False, callback=onLanded)
     landBtn['text'] = 'Aterrizando...'
     landBtn['fg'] = 'black'
     landBtn['bg'] = 'yellow'
 
+
 def RTL():
     global dron
-    # llamada no bloqueante con callback
     dron.RTL(blocking=False, callback=onRTLCompleted)
-    dron.RTL()
     RTLBtn['text'] = 'Volviendo...'
     RTLBtn['fg'] = 'black'
     RTLBtn['bg'] = 'yellow'
 
-def go (direction, btn):
+
+def go(direction, btn):
     global dron, previousBtn
-    # cambio el color del anterior boton clicado (si lo hay)
     if previousBtn:
         previousBtn['fg'] = 'black'
         previousBtn['bg'] = 'dark orange'
-
-    # navegamos en la dirección indicada
-    dron.go (direction)
-    # pongo en verde el boton clicado
+    dron.go(direction)
     btn['fg'] = 'white'
     btn['bg'] = 'green'
-    # tomo nota de que este es el último botón clicado
     previousBtn = btn
 
 
 def startTelem():
     global dron
-    # pedimos datos de telemetría que se procesarán en showTelemetryInfo a medida que vayan llegando
     dron.send_telemetry_info(showTelemetryInfo)
+
 
 def stopTelem():
     global dron
     dron.stop_sending_telemetry_info()
 
-def changeHeading (event):
-    global dron
-    global gradesSldr
-    # cambiamos el heading según se haya seleccionado en el slider
-    dron.changeHeading(int (gradesSldr.get()))
 
-def changeAltitude (event):
-    global dron
-    global altitudeSldr
-    # cambiamos la altitud según se haya seleccionado en el slider
-    dron.change_altitude(int (altitudeSldr.get()))
+def changeHeading(event):
+    dron.changeHeading(int(gradesSldr.get()))
 
-def changeNavSpeed (event):
-    global dron
-    global speedSldr
-    # cambiamos la velocidad de navagación según se haya seleccionado en el slider
-    dron.changeNavSpeed(float (speedSldr.get()))
 
+def changeAltitude(event):
+    dron.change_altitude(int(altitudeSldr.get()))
+
+
+def changeNavSpeed(event):
+    dron.changeNavSpeed(float(speedSldr.get()))
 
 
 def crear_ventana():
-    global dron
-    global  altShowLbl, headingShowLbl,  speedSldr, gradesSldr, stateShowLbl, speedShowLbl, altitudeSldr
-    global connectBtn, armBtn, takeOffBtn, landBtn, RTLBtn
-    global previousBtn # aqui guardaré el ultimo boton de navegación clicado
+    global dron, altShowLbl, headingShowLbl, speedSldr, gradesSldr, stateShowLbl, speedShowLbl, altitudeSldr
+    global connectBtn, armBtn, takeOffBtn, landBtn, RTLBtn, previousBtn, map_widget
 
     dron = Dron()
-
     previousBtn = None
 
     ventana = tk.Tk()
-    ventana.title("Dashboard con conexión directa")
+    ventana.title('Dashboard con conexión directa')
 
-    # Create left frame for controls and right frame for map
-    left_frame = tk.Frame(ventana)
-    right_frame = tk.Frame(ventana, width=400, height=600)
-    left_frame.grid(row=0, column=0, rowspan=10, sticky=tk.N + tk.S + tk.E + tk.W)
-    right_frame.grid(row=0, column=1, rowspan=10, sticky=tk.N + tk.S + tk.E + tk.W)
+    # left controls, right map
+    left_frame = tk.Frame(ventana, bd=0, relief=tk.FLAT)
+    right_frame = tk.Frame(ventana, bd=0, relief=tk.FLAT, width=420, height=640)
+    left_frame.grid(row=0, column=0, sticky='nsew')
+    right_frame.grid(row=0, column=1, sticky='nsew')
     ventana.columnconfigure(0, weight=3)
     ventana.columnconfigure(1, weight=1)
+    ventana.rowconfigure(0, weight=1)
 
-    # Disponemos los botones, indicando qué función ejecutar cuando se clica cada uno de ellos
-    # Los tres primeros ocupan las dos columnas de la fila en la que se colocan
-    connectBtn = tk.Button(left_frame, text="Conectar", bg="dark orange", command = connect)
-    connectBtn.grid(row=0, column=0, columnspan=2, padx=5, pady=5, sticky=tk.N + tk.S + tk.E + tk.W)
+    # Controls
+    connectBtn = tk.Button(left_frame, text='Conectar', bg='dark orange', command=connect)
+    connectBtn.grid(row=0, column=0, columnspan=2, padx=5, pady=5, sticky='ew')
 
-    armBtn = tk.Button(left_frame, text="Armar", bg="dark orange", command=arm)
-    armBtn.grid(row=1, column=0, columnspan=2, padx=5, pady=5, sticky=tk.N + tk.S + tk.E + tk.W)
+    armBtn = tk.Button(left_frame, text='Armar', bg='dark orange', command=arm)
+    armBtn.grid(row=1, column=0, columnspan=2, padx=5, pady=5, sticky='ew')
 
-    takeOffBtn = tk.Button(left_frame, text="Despegar", bg="dark orange", command=takeoff)
-    takeOffBtn.grid(row=2, column=0, columnspan=2, padx=5, pady=5, sticky=tk.N + tk.S + tk.E + tk.W)
+    takeOffBtn = tk.Button(left_frame, text='Despegar', bg='dark orange', command=takeoff)
+    takeOffBtn.grid(row=2, column=0, columnspan=2, padx=5, pady=5, sticky='ew')
 
-    # Slider para seleccionar el heading
-    gradesSldr = tk.Scale(left_frame, label="Grados:", resolution=5, from_=0, to=360, tickinterval=45,
-                              orient=tk.HORIZONTAL)
-    gradesSldr.grid(row=3, column=0, columnspan=2,padx=5, pady=5, sticky=tk.N + tk.S + tk.E + tk.W)
+    def toggle_center():
+        global center_enabled
+        center_enabled = not center_enabled
+        btn_centrar['text'] = 'Centrar: ON' if center_enabled else 'Centrar: OFF'
+
+    btn_centrar = tk.Button(left_frame, text='Centrar: ON', width=12, command=toggle_center)
+    btn_centrar.grid(row=2, column=2, padx=5, pady=5)
+
+    # (removed custom image upload UI - marker is a fire-red circle)
+
+    gradesSldr = tk.Scale(left_frame, label='Grados:', resolution=5, from_=0, to=360, orient=tk.HORIZONTAL)
+    gradesSldr.grid(row=3, column=0, columnspan=3, padx=5, pady=5, sticky='ew')
     gradesSldr.set(180)
-    gradesSldr.bind("<ButtonRelease-1>", changeHeading)
+    gradesSldr.bind('<ButtonRelease-1>', changeHeading)
 
-    # Slider para seleccionar la altitud
-    altitudeSldr = tk.Scale(left_frame, label="Altitud (m):", resolution=1, from_=0, to=100, tickinterval=10,
-                              orient=tk.HORIZONTAL)
-    altitudeSldr.grid(row=4, column=0, columnspan=2, padx=5, pady=5, sticky=tk.N + tk.S + tk.E + tk.W)
-    altitudeSldr.bind("<ButtonRelease-1>", changeAltitude)
+    altitudeSldr = tk.Scale(left_frame, label='Altitud (m):', resolution=1, from_=0, to=100, orient=tk.HORIZONTAL)
+    altitudeSldr.grid(row=4, column=0, columnspan=3, padx=5, pady=5, sticky='ew')
+    altitudeSldr.bind('<ButtonRelease-1>', changeAltitude)
 
-    # los dos siguientes están en la misma fila están en la misma fila
-    landBtn = tk.Button(left_frame, text="aterrizar", bg="dark orange", command=land)
-    landBtn.grid(row=5, column=0, padx=5, pady=5, sticky=tk.N + tk.S + tk.E + tk.W)
+    landBtn = tk.Button(left_frame, text='Aterrizar', bg='dark orange', command=land)
+    landBtn.grid(row=5, column=0, padx=5, pady=5, sticky='ew')
+    RTLBtn = tk.Button(left_frame, text='RTL', bg='dark orange', command=RTL)
+    RTLBtn.grid(row=5, column=1, padx=5, pady=5, sticky='ew')
 
-    RTLBtn = tk.Button(left_frame, text="RTL", bg="dark orange", command=RTL)
-    RTLBtn.grid(row=5, column=1, padx=5, pady=5, sticky=tk.N + tk.S + tk.E + tk.W)
+    navFrame = tk.LabelFrame(left_frame, text='Navegación', bd=0, relief=tk.FLAT)
+    navFrame.grid(row=6, column=0, columnspan=3, padx=5, pady=5, sticky='ew')
+    for r in range(3):
+        navFrame.rowconfigure(r, weight=1)
+    for c in range(3):
+        navFrame.columnconfigure(c, weight=1)
 
-    # este es el frame para la navegación. Pequeña matriz de 3 x 3 botones
-    # con el valor de padx hacemos que se introduzca un espacio en blanco a la derecha,
-    navFrame = tk.LabelFrame (left_frame, text = "Navegación")
-    navFrame.grid(row=6, column=0, columnspan = 2, padx=50, pady=5, sticky=tk.N + tk.S + tk.E + tk.W)
+    NWBtn = tk.Button(navFrame, text='NW', bg='dark orange', command=lambda: go('NorthWest', NWBtn))
+    NWBtn.grid(row=0, column=0, padx=2, pady=2, sticky='nsew')
+    NoBtn = tk.Button(navFrame, text='No', bg='dark orange', command=lambda: go('North', NoBtn))
+    NoBtn.grid(row=0, column=1, padx=2, pady=2, sticky='nsew')
+    NEBtn = tk.Button(navFrame, text='NE', bg='dark orange', command=lambda: go('NorthEast', NEBtn))
+    NEBtn.grid(row=0, column=2, padx=2, pady=2, sticky='nsew')
 
-    navFrame.rowconfigure(0, weight=1)
-    navFrame.rowconfigure(1, weight=1)
-    navFrame.rowconfigure(2, weight=1)
-    navFrame.columnconfigure(0, weight=1)
-    navFrame.columnconfigure(1, weight=1)
-    navFrame.columnconfigure(2, weight=1)
+    WeBtn = tk.Button(navFrame, text='We', bg='dark orange', command=lambda: go('West', WeBtn))
+    WeBtn.grid(row=1, column=0, padx=2, pady=2, sticky='nsew')
+    StopBtn = tk.Button(navFrame, text='St', bg='dark orange', command=lambda: go('Stop', StopBtn))
+    StopBtn.grid(row=1, column=1, padx=2, pady=2, sticky='nsew')
+    EaBtn = tk.Button(navFrame, text='Ea', bg='dark orange', command=lambda: go('East', EaBtn))
+    EaBtn.grid(row=1, column=2, padx=2, pady=2, sticky='nsew')
 
-    # al clicar en cualquiera de los botones se activa la función go a la que se le pasa la dirección
-    # en la que hay que navegar y el boton clicado, para que la función le cambie el color
-    NWBtn = tk.Button(navFrame, text="NW", bg="dark orange",
-                        command= lambda: go("NorthWest", NWBtn))
-    NWBtn.grid(row=0, column=0, padx=2, pady=2, sticky=tk.N + tk.S + tk.E + tk.W)
+    SWBtn = tk.Button(navFrame, text='SW', bg='dark orange', command=lambda: go('Down', SWBtn))
+    SWBtn.grid(row=2, column=0, padx=2, pady=2, sticky='nsew')
+    SoBtn = tk.Button(navFrame, text='So', bg='dark orange', command=lambda: go('South', SoBtn))
+    SoBtn.grid(row=2, column=1, padx=2, pady=2, sticky='nsew')
+    SEBtn = tk.Button(navFrame, text='SE', bg='dark orange', command=lambda: go('Up', SEBtn))
+    SEBtn.grid(row=2, column=2, padx=2, pady=2, sticky='nsew')
 
-    NoBtn = tk.Button(navFrame, text="No", bg="dark orange",
-                        command= lambda: go("North", NoBtn))
-    NoBtn.grid(row=0, column=1, padx=2, pady=2, sticky=tk.N + tk.S + tk.E + tk.W)
+    speedSldr = tk.Scale(left_frame, label='Velocidad (m/s):', resolution=1, from_=0, to=20, orient=tk.HORIZONTAL)
+    speedSldr.grid(row=7, column=0, columnspan=3, padx=5, pady=5, sticky='ew')
+    speedSldr.bind('<ButtonRelease-1>', changeNavSpeed)
 
-    NEBtn = tk.Button(navFrame, text="NE", bg="dark orange",
-                        command= lambda: go("NorthEast", NEBtn))
-    NEBtn.grid(row=0, column=2, padx=2, pady=2, sticky=tk.N + tk.S + tk.E + tk.W)
+    StartTelemBtn = tk.Button(left_frame, text='Empezar a enviar telemetría', bg='dark orange', command=startTelem)
+    StartTelemBtn.grid(row=8, column=0, padx=5, pady=5, sticky='ew')
+    StopTelemBtn = tk.Button(left_frame, text='Parar de enviar telemetría', bg='dark orange', command=stopTelem)
+    StopTelemBtn.grid(row=8, column=1, padx=5, pady=5, sticky='ew')
 
-    WeBtn = tk.Button(navFrame, text="We", bg="dark orange",
-                        command=lambda: go("West", WeBtn))
-    WeBtn.grid(row=1, column=0, padx=2, pady=2, sticky=tk.N + tk.S + tk.E + tk.W)
-
-    StopBtn = tk.Button(navFrame, text="St", bg="dark orange",
-                        command=lambda: go("Stop", StopBtn))
-    StopBtn.grid(row=1, column=1, padx=2, pady=2, sticky=tk.N + tk.S + tk.E + tk.W)
-
-    EaBtn = tk.Button(navFrame, text="Ea", bg="dark orange",
-                        command=lambda: go("East", EaBtn))
-    EaBtn.grid(row=1, column=2, padx=2, pady=2, sticky=tk.N + tk.S + tk.E + tk.W)
-
-
-    SWBtn = tk.Button(navFrame, text="SW", bg="dark orange",
-                        #command=lambda: go("SouthWest", SWBtn))
-                        command = lambda: go("Down", SWBtn))
-    SWBtn.grid(row=2, column=0, padx=2, pady=2, sticky=tk.N + tk.S + tk.E + tk.W)
-
-    SoBtn = tk.Button(navFrame, text="So", bg="dark orange",
-                        command=lambda: go("South", SoBtn))
-    SoBtn.grid(row=2, column=1, padx=2, pady=2, sticky=tk.N + tk.S + tk.E + tk.W)
-
-    SEBtn = tk.Button(navFrame, text="SE", bg="dark orange",
-                        #command=lambda: go("SouthEast", SEBtn))
-                        command = lambda: go("Up", SEBtn))
-    SEBtn.grid(row=2, column=2, padx=2, pady=2, sticky=tk.N + tk.S + tk.E + tk.W)
-
-
-    # slider para elegir la velocidad de navegación
-    speedSldr = tk.Scale(left_frame, label="Velocidad (m/s):", resolution=1, from_=0, to=20, tickinterval=5,
-                          orient=tk.HORIZONTAL)
-    speedSldr.grid(row=7, column=0, columnspan=2, padx=5, pady=5, sticky=tk.N + tk.S + tk.E + tk.W)
-    speedSldr.bind("<ButtonRelease-1>", changeNavSpeed)
-
-    # botones para pedir/parar datos de telemetría
-    StartTelemBtn = tk.Button(left_frame, text="Empezar a enviar telemetría", bg="dark orange", command=startTelem)
-    StartTelemBtn.grid(row=8, column=0, padx=5, pady=5, sticky=tk.N + tk.S + tk.E + tk.W)
-
-    StopTelemBtn = tk.Button(left_frame, text="Parar de enviar telemetría", bg="dark orange", command=stopTelem)
-    StopTelemBtn.grid(row=8, column=1, padx=5, pady=5, sticky=tk.N + tk.S + tk.E + tk.W)
-
-    # Este es el frame para mostrar los datos de telemetría
-    # Contiene etiquetas para informar de qué datos son y los valores. Solo nos interesan 3 datos de telemetría
-    telemetryFrame = tk.LabelFrame(left_frame, text="Telemetría")
-    telemetryFrame.grid(row=9, column=0, columnspan=2, padx=10, pady=10, sticky=tk.N + tk.S + tk.E + tk.W)
-
-    telemetryFrame.rowconfigure(0, weight=1)
-    telemetryFrame.rowconfigure(1, weight=1)
-
+    telemetryFrame = tk.LabelFrame(left_frame, text='Telemetría', bd=0, relief=tk.FLAT)
+    telemetryFrame.grid(row=9, column=0, columnspan=3, padx=5, pady=5, sticky='ew')
     telemetryFrame.columnconfigure(0, weight=1)
     telemetryFrame.columnconfigure(1, weight=1)
     telemetryFrame.columnconfigure(2, weight=1)
     telemetryFrame.columnconfigure(3, weight=1)
 
-    # etiquetas informativas
     altLbl = tk.Label(telemetryFrame, text='Altitud')
-    altLbl.grid(row=0, column=0,  padx=5, pady=5, sticky=tk.N + tk.S + tk.E + tk.W)
-
+    altLbl.grid(row=0, column=0, padx=5, pady=5)
     headingLbl = tk.Label(telemetryFrame, text='Heading')
-    headingLbl.grid(row=0, column=1,  padx=5, pady=5, sticky=tk.N + tk.S + tk.E + tk.W)
-
+    headingLbl.grid(row=0, column=1, padx=5, pady=5)
     stateLbl = tk.Label(telemetryFrame, text='Estado')
-    stateLbl.grid(row=0, column=2,  padx=5, pady=5, sticky=tk.N + tk.S + tk.E + tk.W)
-
+    stateLbl.grid(row=0, column=2, padx=5, pady=5)
     speedLbl = tk.Label(telemetryFrame, text='Velocidad (m/s)')
-    speedLbl.grid(row=0, column=3,  padx=5, pady=5, sticky=tk.N + tk.S + tk.E + tk.W)
+    speedLbl.grid(row=0, column=3, padx=5, pady=5)
 
-    # etiquetas para colocar aqui los datos cuando se reciben
     altShowLbl = tk.Label(telemetryFrame, text='')
-    altShowLbl.grid(row=1, column=0, padx=5, pady=5, sticky=tk.N + tk.S + tk.E + tk.W)
-
-    headingShowLbl = tk.Label(telemetryFrame, text='',)
-    headingShowLbl.grid(row=1, column=1,  padx=5, pady=5, sticky=tk.N + tk.S + tk.E + tk.W)
-
-    stateShowLbl = tk.Label(telemetryFrame, text='', )
-    stateShowLbl.grid(row=1, column=2, padx=5, pady=5, sticky=tk.N + tk.S + tk.E + tk.W)
-
+    altShowLbl.grid(row=1, column=0, padx=5, pady=5)
+    headingShowLbl = tk.Label(telemetryFrame, text='')
+    headingShowLbl.grid(row=1, column=1, padx=5, pady=5)
+    stateShowLbl = tk.Label(telemetryFrame, text='')
+    stateShowLbl.grid(row=1, column=2, padx=5, pady=5)
     speedShowLbl = tk.Label(telemetryFrame, text='')
-    speedShowLbl.grid(row=1, column=3, padx=5, pady=5, sticky=tk.N + tk.S + tk.E + tk.W)
+    speedShowLbl.grid(row=1, column=3, padx=5, pady=5)
 
     # Initialize map in right_frame
-    global map_widget, drone_marker
+    global map_widget
     if MAP_AVAILABLE:
         try:
-            map_widget = TkinterMapView(right_frame, width=400, height=600, corner_radius=0)
+            map_widget = TkinterMapView(right_frame, width=420, height=640, corner_radius=0)
+            # Prefer ESRI World Imagery for satellite tiles (stable without API key)
+            try:
+                esri = 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}'
+                map_widget.set_tile_server(esri, max_zoom=19)
+            except Exception:
+                pass
             map_widget.pack(fill=tk.BOTH, expand=True)
-            map_widget.set_zoom(15)
-            drone_marker = None
+            map_widget.set_zoom(16)
+            # center initially at 0,0
+            map_widget.set_position(0, 0)
         except Exception as e:
             tk.Label(right_frame, text=f'Error iniciando mapa: {e}').pack(fill=tk.BOTH, expand=True)
     else:
@@ -394,6 +465,7 @@ def crear_ventana():
 
     return ventana
 
-if __name__ == "__main__":
+
+if __name__ == '__main__':
     ventana = crear_ventana()
     ventana.mainloop()

@@ -7,6 +7,24 @@ from tkinter import simpledialog, messagebox
 import time
 import math
 from dronLink.Dron import Dron
+import threading
+import asyncio
+import cv2
+import numpy as np
+try:
+    from aiortc import RTCPeerConnection, RTCSessionDescription, MediaStreamTrack
+    from aiortc.contrib.signaling import TcpSocketSignaling
+    from av import VideoFrame
+    import torch
+    WEBDRTC_AVAILABLE = True
+except Exception:
+    RTCPeerConnection = None
+    RTCSessionDescription = None
+    MediaStreamTrack = None
+    TcpSocketSignaling = None
+    VideoFrame = None
+    torch = None
+    WEBDRTC_AVAILABLE = False
 
 # Optional map support using tkintermapview. If not installed, we show an instruction.
 try:
@@ -34,6 +52,374 @@ path_segments = []  # list of map path objects for fading trail
 path_points = []    # list of (lat, lon, timestamp)
 _marker_icon = None
 center_enabled = True
+
+
+# ------------------ Video receive/ detection (copied from DashboardLocalConDeteccion.py) ------------------
+####### INSTALAR ###############
+# ultralytics
+# torch
+# seaborn
+# tpdm
+#######################################
+
+import threading
+import asyncio
+import cv2
+import numpy as np
+from aiortc import RTCPeerConnection, RTCSessionDescription, MediaStreamTrack
+from aiortc.contrib.signaling import TcpSocketSignaling
+from av import VideoFrame
+import torch
+
+
+class Detector:
+    def __init__ (self):
+        # Cargar el modelo YOLOv5 preentrenado de Ultralytics
+        self.model = torch.hub.load('ultralytics/yolov5', 'yolov5s', pretrained=True)
+        self.model.eval()
+
+        # Inicializar la captura de video desde webcam (índice 0) o usa un archivo con 'video.mp4'
+        self.cap = cv2.VideoCapture(0)
+
+    def detect (self, frame, objectID):
+        # Convertir frame a RGB para YOLO
+        img_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+
+        # Inferencia con el modelo
+        results = self.model(img_rgb)
+        detectado = False
+        # Procesar resultados
+
+        for *box, conf, cls in results.xyxy[0]:
+            if int(cls.item()) == objectID:
+                x1, y1, x2, y2 = map(int, box)
+                detectado = True
+        if detectado:
+            return True,  [x1, y1, x2, y2]
+        else:
+            return False, None
+
+
+class VideoReceiver:
+    def __init__(self):
+        self.track = None
+        self.detector = Detector()
+        self.objectID = None
+
+    def setObject (self, objectID):
+        self.objectID = objectID
+
+    async def handle_track(self, track):
+        print("Inside handle track")
+        self.track = track
+        frame_count = 0
+        detectado = False
+        while True:
+            try:
+                #print("Waiting for frame...")
+                frame = await asyncio.wait_for(track.recv(), timeout=5.0)
+                frame_count += 1
+                #print(f"Received frame {frame_count}")
+
+                if isinstance(frame, VideoFrame):
+                    #print(f"Frame type: VideoFrame, pts: {frame.pts}, time_base: {frame.time_base}")
+                    frame = frame.to_ndarray(format="bgr24")
+                elif isinstance(frame, np.ndarray):
+                    print(f"Frame type: numpy array")
+                else:
+                    #print(f"Unexpected frame type: {type(frame)}")
+                    continue
+                if self.objectID:
+                    if frame_count % 15 == 0:
+                        detectado, rectangulo  = self.detector.detect(frame,self.objectID)
+
+                    if detectado:
+                        label = "here"
+                        x1, y1, x2, y2 = rectangulo
+                        cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
+                        cv2.putText(frame, label, (x1, y1 - 10),
+                                   cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+
+                cv2.imshow("Frame", frame)
+
+                # Exit on 'q' key press
+                if cv2.waitKey(1) & 0xFF == ord('q'):
+                    break
+            except asyncio.TimeoutError:
+                print("Timeout waiting for frame, continuing...")
+            except Exception as e:
+                print(f"Error in handle_track: {str(e)}")
+                if "Connection" in str(e):
+                    break
+        print("Exiting handle_track")
+
+
+async def run(pc, signaling):
+    await signaling.connect()
+
+    @pc.on("track")
+    def on_track(track):
+        if isinstance(track, MediaStreamTrack):
+            print(f"Receiving {track.kind} track")
+            asyncio.ensure_future(video_receiver.handle_track(track))
+
+    @pc.on("datachannel")
+    def on_datachannel(channel):
+        print(f"Data channel established: {channel.label}")
+
+    @pc.on("connectionstatechange")
+    async def on_connectionstatechange():
+        print(f"Connection state is {pc.connectionState}")
+        if pc.connectionState == "connected":
+            print("WebRTC connection established successfully")
+
+    print("Waiting for offer from sender...")
+    offer = await signaling.receive()
+    print("Offer received")
+    await pc.setRemoteDescription(offer)
+    print("Remote description set")
+
+    answer = await pc.createAnswer()
+    print("Answer created")
+    await pc.setLocalDescription(answer)
+    print("Local description set")
+
+    await signaling.send(pc.localDescription)
+    print("Answer sent to sender")
+
+    print("Waiting for connection to be established...")
+    while pc.connectionState != "connected":
+        await asyncio.sleep(0.1)
+
+    print("Connection established, waiting for frames...")
+    await asyncio.sleep(100)  # Wait for 35 seconds to receive frames
+
+    print("Closing connection")
+
+
+async def videoReceiver():
+    # el receptor actua de cliente que debe conectarse al emisor que actua de servidor
+    IP_server = "localhost"
+    signaling = TcpSocketSignaling(IP_server, 9999)
+    pc = RTCPeerConnection()
+
+    global video_receiver
+    video_receiver = VideoReceiver()
+
+    try:
+        await run(pc, signaling)
+    except Exception as e:
+        print(f"Error in main: {str(e)}")
+    finally:
+        print("Closing peer connection")
+        await pc.close()
+
+
+def videoThread ():
+    asyncio.run(videoReceiver())
+
+
+def video ():
+    threading.Thread (target = videoThread).start()
+
+
+def platano ():
+    global video_receiver
+    video_receiver.setObject(46)
+
+
+def clock ():
+    video_receiver.setObject(74)
+
+
+def pizza ():
+    video_receiver.setObject(53)
+
+
+def avion ():
+    video_receiver.setObject(4)
+
+
+def coche ():
+    video_receiver.setObject(2)
+
+
+def moto ():
+    video_receiver.setObject(3)
+
+
+# ------------------ Video receive/ detection (copied from DashboardLocalConDeteccion.py) ------------------
+class Detector:
+    def __init__(self):
+        global torch
+        self.model = None
+        if WEBDRTC_AVAILABLE and torch is not None:
+            try:
+                # load yolov5s via torch hub (ultralytics)
+                self.model = torch.hub.load('ultralytics/yolov5', 'yolov5s', pretrained=True)
+                self.model.eval()
+            except Exception:
+                self.model = None
+
+    def detect(self, frame, objectID):
+        # Run detection on BGR frame and return True + bbox if objectID detected
+        if self.model is None:
+            return False, None
+        try:
+            img = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            results = self.model(img)
+            for *box, conf, cls in results.xyxy[0]:
+                if int(cls.item()) == objectID:
+                    x1, y1, x2, y2 = map(int, box)
+                    return True, [x1, y1, x2, y2]
+            return False, None
+        except Exception:
+            return False, None
+
+
+class VideoReceiver:
+    def __init__(self):
+        self.track = None
+        self.detector = Detector()
+        self.objectID = None
+
+    def setObject(self, objectID):
+        self.objectID = objectID
+
+    async def handle_track(self, track):
+        print("Inside handle track")
+        self.track = track
+        frame_count = 0
+        detectado = False
+        while True:
+            try:
+                frame = await asyncio.wait_for(track.recv(), timeout=5.0)
+                frame_count += 1
+                if isinstance(frame, VideoFrame):
+                    frame = frame.to_ndarray(format='bgr24')
+                elif isinstance(frame, np.ndarray):
+                    pass
+                else:
+                    continue
+
+                if self.objectID:
+                    if frame_count % 15 == 0:
+                        detectado, rectangulo = self.detector.detect(frame, self.objectID)
+                    if detectado and rectangulo:
+                        label = 'here'
+                        x1, y1, x2, y2 = rectangulo
+                        cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
+                        cv2.putText(frame, label, (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+
+                cv2.imshow('Frame', frame)
+                if cv2.waitKey(1) & 0xFF == ord('q'):
+                    break
+            except asyncio.TimeoutError:
+                print('Timeout waiting for frame, continuing...')
+            except Exception as e:
+                print(f'Error in handle_track: {e}')
+                if 'Connection' in str(e):
+                    break
+        print('Exiting handle_track')
+
+
+async def run(pc, signaling):
+    await signaling.connect()
+
+    @pc.on('track')
+    def on_track(track):
+        if isinstance(track, MediaStreamTrack):
+            print(f'Receiving {track.kind} track')
+            asyncio.ensure_future(video_receiver.handle_track(track))
+
+    @pc.on('datachannel')
+    def on_datachannel(channel):
+        print(f'Data channel established: {channel.label}')
+
+    @pc.on('connectionstatechange')
+    async def on_connectionstatechange():
+        print(f'Connection state is {pc.connectionState}')
+        if pc.connectionState == 'connected':
+            print('WebRTC connection established successfully')
+
+    print('Waiting for offer from sender...')
+    offer = await signaling.receive()
+    print('Offer received')
+    await pc.setRemoteDescription(offer)
+    print('Remote description set')
+
+    answer = await pc.createAnswer()
+    print('Answer created')
+    await pc.setLocalDescription(answer)
+    print('Local description set')
+
+    await signaling.send(pc.localDescription)
+    print('Answer sent to sender')
+
+    print('Waiting for connection to be established...')
+    while pc.connectionState != 'connected':
+        await asyncio.sleep(0.1)
+
+    print('Connection established, waiting for frames...')
+    await asyncio.sleep(100)
+
+    print('Closing connection')
+
+
+async def videoReceiver():
+    IP_server = 'localhost'
+    signaling = TcpSocketSignaling(IP_server, 9999)
+    pc = RTCPeerConnection()
+
+    global video_receiver
+    video_receiver = VideoReceiver()
+
+    try:
+        await run(pc, signaling)
+    except Exception as e:
+        print(f'Error in main: {e}')
+    finally:
+        print('Closing peer connection')
+        await pc.close()
+
+
+def videoThread():
+    asyncio.run(videoReceiver())
+
+
+def video():
+    threading.Thread(target=videoThread).start()
+
+
+def platano():
+    global video_receiver
+    if video_receiver:
+        video_receiver.setObject(46)
+
+
+def clock():
+    if video_receiver:
+        video_receiver.setObject(74)
+
+
+def pizza():
+    if video_receiver:
+        video_receiver.setObject(53)
+
+
+def avion():
+    if video_receiver:
+        video_receiver.setObject(4)
+
+
+def coche():
+    if video_receiver:
+        video_receiver.setObject(2)
+
+
+def moto():
+    if video_receiver:
+        video_receiver.setObject(3)
 
 
 def create_fire_circle_icon(size=20):
@@ -442,6 +828,34 @@ def crear_ventana():
     stateShowLbl.grid(row=1, column=2, padx=5, pady=5)
     speedShowLbl = tk.Label(telemetryFrame, text='')
     speedShowLbl.grid(row=1, column=3, padx=5, pady=5)
+
+    # Video receive button (WebRTC)
+    videoBtn = tk.Button(left_frame, text='Recibir video por WebRTC', bg='dark orange', command=lambda: threading.Thread(target=videoThread, daemon=True).start())
+    videoBtn.grid(row=10, column=0, columnspan=3, padx=5, pady=5, sticky='ew')
+
+    # Detection buttons (examples)
+    detectFrame = tk.LabelFrame(left_frame, text='Detección de objetos')
+    detectFrame.grid(row=11, column=0, columnspan=3, padx=5, pady=5, sticky='ew')
+    detectFrame.rowconfigure(0, weight=1)
+    detectFrame.columnconfigure(0, weight=1)
+    detectFrame.columnconfigure(1, weight=1)
+    detectFrame.columnconfigure(2, weight=1)
+
+    bananaBtn = tk.Button(detectFrame, text='Banana', bg='dark orange', command=lambda: platano())
+    bananaBtn.grid(row=0, column=0, padx=5, pady=5, sticky='ew')
+    raquetaBtn = tk.Button(detectFrame, text='Reloj', bg='dark orange', command=lambda: clock())
+    raquetaBtn.grid(row=0, column=1, padx=5, pady=5, sticky='ew')
+    pizzaBtn = tk.Button(detectFrame, text='Pizza', bg='dark orange', command=lambda: pizza())
+    pizzaBtn.grid(row=0, column=2, padx=5, pady=5, sticky='ew')
+
+    # second row of detection buttons
+    detectFrame.rowconfigure(1, weight=1)
+    avionBtn = tk.Button(detectFrame, text='Avion', bg='dark orange', command=lambda: avion())
+    avionBtn.grid(row=1, column=0, padx=5, pady=5, sticky='ew')
+    cocheBtn = tk.Button(detectFrame, text='Coche', bg='dark orange', command=lambda: coche())
+    cocheBtn.grid(row=1, column=1, padx=5, pady=5, sticky='ew')
+    MotoBtn = tk.Button(detectFrame, text='Moto', bg='dark orange', command=lambda: moto())
+    MotoBtn.grid(row=1, column=2, padx=5, pady=5, sticky='ew')
 
     # Initialize map in right_frame
     global map_widget

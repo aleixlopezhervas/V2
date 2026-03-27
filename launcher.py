@@ -74,10 +74,19 @@ class LauncherApp:
             self._log(f'Error al iniciar {script_name}: {e}')
 
     def start_local(self):
-        # Start DashboardLocalPython.py
+        # Ensure background services are running first (Autopilot + Camera)
+        if not (self.processes.get('autopilot') and self.processes['autopilot'].poll() is None):
+            self._start_process('autopilot', 'AutopilotService.py')
+        else:
+            self._log('AutopilotService ya se estaba ejecutando.')
+
+        if not (self.processes.get('camera') and self.processes['camera'].poll() is None):
+            self._start_process('camera', 'CameraService.py')
+        else:
+            self._log('CameraService ya se estaba ejecutando.')
+
+        # Start the local dashboard
         self._start_process('local', 'DashboardLocalPython.py')
-        # Ensure CameraService is running for local mode
-        self._start_process('camera', 'CameraService.py')
 
     def start_global(self):
         # Start AutopilotService first, then DashboardGlobalPython
@@ -87,10 +96,13 @@ class LauncherApp:
         else:
             self._log('AutopilotService ya se estaba ejecutando.')
 
-        # Start global dashboard
+        if not (self.processes.get('camera') and self.processes['camera'].poll() is None):
+            self._start_process('camera', 'CameraService.py')
+        else:
+            self._log('CameraService ya se estaba ejecutando.')
+
+        # Start the global dashboard after background services
         self._start_process('global', 'DashboardGlobalPython.py')
-        # Ensure CameraService is running for global mode as well
-        self._start_process('camera', 'CameraService.py')
 
     def _terminate_process(self, p, name):
         if not p:

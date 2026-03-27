@@ -6,6 +6,8 @@ import tkinter as tk
 from tkinter import simpledialog, messagebox
 import time
 import math
+import os
+import os
 from dronLink.Dron import Dron
 import threading
 import asyncio
@@ -862,16 +864,126 @@ def crear_ventana():
     if MAP_AVAILABLE:
         try:
             map_widget = TkinterMapView(right_frame, width=420, height=640, corner_radius=0)
-            # Prefer ESRI World Imagery for satellite tiles (stable without API key)
+            # Default to a detailed Streets style. Prefer Mapbox Streets if token is
+            # provided; otherwise use OpenStreetMap standard tiles for clear street detail.
             try:
-                esri = 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}'
-                map_widget.set_tile_server(esri, max_zoom=19)
+                mapbox_token = os.environ.get('MAPBOX_TOKEN') or os.environ.get('MAPBOX_API_KEY')
+                if mapbox_token:
+                    mapbox_url = f'https://api.mapbox.com/styles/v1/mapbox/streets-v11/tiles/256/{{z}}/{{x}}/{{y}}@2x?access_token={mapbox_token}'
+                    map_widget.set_tile_server(mapbox_url, max_zoom=20)
+                else:
+                    # use CartoDB Voyager for a more detailed streets style when Mapbox is not available
+                    map_widget.set_tile_server('https://a.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}.png', max_zoom=19)
             except Exception:
-                pass
+                try:
+                    esri = 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}'
+                    map_widget.set_tile_server(esri, max_zoom=19)
+                except Exception:
+                    pass
             map_widget.pack(fill=tk.BOTH, expand=True)
             map_widget.set_zoom(16)
             # center initially at 0,0
             map_widget.set_position(0, 0)
+
+            # View mode selector: either show Google-like Layers control or directly use Satellite
+            viewVar = tk.StringVar(value='Layers')
+            # layerVar and change_map_layer implement the Google-like layers menu
+            layerVar = tk.StringVar(value='Streets')
+            def change_map_layer(selection):
+                try:
+                    if map_widget:
+                        lat, lon = map_widget.get_position()
+                        z = map_widget.get_zoom()
+                    else:
+                        lat = 0; lon = 0; z = 16
+                except Exception:
+                    lat = 0; lon = 0; z = 16
+
+                sel = selection or layerVar.get()
+                # Streets: prefer Mapbox (if token) else CartoDB Voyager for clearer street detail
+                mapbox_token = os.environ.get('MAPBOX_TOKEN') or os.environ.get('MAPBOX_API_KEY')
+                if mapbox_token:
+                    streets_url = f'https://api.mapbox.com/styles/v1/mapbox/streets-v11/tiles/256/{{z}}/{{x}}/{{y}}@2x?access_token={mapbox_token}'
+                    streets_maxz = 20
+                else:
+                    streets_url = 'https://a.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}.png'
+                    streets_maxz = 19
+
+                candidates = {
+                    'Streets': (streets_url, streets_maxz),
+                    'Satellite': ('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', 19),
+                }
+
+                try:
+                    url, maxz = candidates.get(sel, candidates['Streets'])
+                    map_widget.set_tile_server(url, max_zoom=maxz)
+                    # restore position/zoom and force a tiny zoom toggle to ensure tile reload
+                    try:
+                        map_widget.set_zoom(int(z) if isinstance(z, (int, float)) else map_widget.get_zoom())
+                        map_widget.set_position(lat, lon)
+                        cur_z = int(z) if isinstance(z, (int, float)) else map_widget.get_zoom()
+                        tmp_z = cur_z - 1 if cur_z > 0 else cur_z + 1
+                        map_widget.set_zoom(tmp_z)
+                        def _restore():
+                            try:
+                                map_widget.set_zoom(cur_z)
+                                map_widget.set_position(lat, lon)
+                            except Exception:
+                                pass
+                        map_widget.after(120, _restore)
+                    except Exception:
+                        try:
+                            map_widget.set_zoom(z)
+                            map_widget.set_position(lat, lon)
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
+
+            # Create a Google-like Layers menubutton (but we'll show/hide it depending on view mode)
+            layers_btn = tk.Menubutton(right_frame, text='Layers', bg='white', relief='raised')
+            layers_menu = tk.Menu(layers_btn, tearoff=0)
+            layers_menu.add_command(label='Streets', command=lambda: change_map_layer('Streets'))
+            layers_menu.add_command(label='Satellite', command=lambda: change_map_layer('Satellite'))
+            layers_btn.config(menu=layers_menu)
+
+            def change_view_mode(selection):
+                # selection is 'Layers' or 'Satellite'
+                sel = selection or viewVar.get()
+                if sel == 'Satellite':
+                    # hide the Layers menubutton and set satellite tiles
+                    try:
+                        layers_btn.place_forget()
+                    except Exception:
+                        try:
+                            layers_btn.grid_forget()
+                        except Exception:
+                            pass
+                    try:
+                        map_widget.set_tile_server('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', max_zoom=19)
+                    except Exception:
+                        pass
+                else:
+                    # show Layers menubutton and default to Streets
+                    try:
+                        layers_btn.place(relx=0.02, rely=0.02)
+                    except Exception:
+                        try:
+                            layers_btn.grid(row=2, column=3, padx=5, pady=5)
+                        except Exception:
+                            pass
+                    # set to Streets by default
+                    change_map_layer('Streets')
+
+            # Small OptionMenu in left_frame to toggle between 'Layers' and 'Satellite'
+            view_menu = tk.OptionMenu(left_frame, viewVar, 'Layers', 'Satellite', command=change_view_mode)
+            view_menu.config(width=12)
+            view_menu.grid(row=2, column=3, padx=5, pady=5)
+            # ensure Layers menubutton visible initially
+            try:
+                layers_btn.place(relx=0.02, rely=0.02)
+            except Exception:
+                layers_btn.grid(row=2, column=3, padx=5, pady=5)
 
             # Map click -> goto handler
             def _on_map_click(data):

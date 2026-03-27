@@ -7,12 +7,13 @@ from tkinter import simpledialog, messagebox
 import time
 import math
 import os
-import os
 from dronLink.Dron import Dron
 import threading
 import asyncio
 import cv2
 import numpy as np
+import subprocess
+import sys
 try:
     from aiortc import RTCPeerConnection, RTCSessionDescription, MediaStreamTrack
     from aiortc.contrib.signaling import TcpSocketSignaling
@@ -28,7 +29,7 @@ except Exception:
     torch = None
     WEBDRTC_AVAILABLE = False
 
-# Optional map support using tkintermapview. If not installed, we show an instruction.
+# Optional map widget
 try:
     from tkintermapview import TkinterMapView
     MAP_AVAILABLE = True
@@ -36,15 +37,48 @@ except Exception:
     TkinterMapView = None
     MAP_AVAILABLE = False
 
-# Optional Pillow for custom icon
-try:
-    from PIL import Image, ImageDraw, ImageTk
-    PIL_AVAILABLE = True
-except Exception:
-    Image = None
-    ImageDraw = None
-    ImageTk = None
-    PIL_AVAILABLE = False
+
+def _do_connect(connection_string, baud):
+    """Attempt to connect the drone and update UI; returns True on success."""
+    global dron, speedSldr
+    try:
+        dron.connect(connection_string, baud)
+    except Exception as e:
+        try:
+            messagebox.showerror('Conexión fallida', f'No se pudo conectar a {connection_string} (baud {baud}): {e}')
+        except Exception:
+            pass
+        return False
+
+    try:
+        connectBtn['text'] = 'Conectado'
+        connectBtn['fg'] = 'white'
+        connectBtn['bg'] = 'green'
+    except Exception:
+        pass
+    try:
+        speedSldr.set(1)
+    except Exception:
+        pass
+    return True
+
+
+def connect_auto(mode, com=None):
+    """Programmatic connect used when dashboard is started with args from launcher.
+    mode: 'sim' or 'esc'. If 'esc', com must be provided like 'COM3'."""
+    if mode is None:
+        return
+    if mode == 'sim':
+        connection_string = 'tcp:127.0.0.1:5763'
+        baud = 115200
+    elif mode == 'esc':
+        if not com:
+            return
+        connection_string = com
+        baud = 57600
+    else:
+        return
+    _do_connect(connection_string, baud)
 
 # Globals
 map_widget = None
@@ -97,106 +131,10 @@ class Detector:
                 x1, y1, x2, y2 = map(int, box)
                 detectado = True
         if detectado:
-            return True,  [x1, y1, x2, y2]
+            return True, [x1, y1, x2, y2]
         else:
             return False, None
-
-
-class VideoReceiver:
-    def __init__(self):
-        self.track = None
-        self.detector = Detector()
-        self.objectID = None
-
-    def setObject (self, objectID):
-        self.objectID = objectID
-
-    async def handle_track(self, track):
-        print("Inside handle track")
-        self.track = track
-        frame_count = 0
-        detectado = False
-        while True:
-            try:
-                #print("Waiting for frame...")
-                frame = await asyncio.wait_for(track.recv(), timeout=5.0)
-                frame_count += 1
-                #print(f"Received frame {frame_count}")
-
-                if isinstance(frame, VideoFrame):
-                    #print(f"Frame type: VideoFrame, pts: {frame.pts}, time_base: {frame.time_base}")
-                    frame = frame.to_ndarray(format="bgr24")
-                elif isinstance(frame, np.ndarray):
-                    print(f"Frame type: numpy array")
-                else:
-                    #print(f"Unexpected frame type: {type(frame)}")
-                    continue
-                if self.objectID:
-                    if frame_count % 15 == 0:
-                        detectado, rectangulo  = self.detector.detect(frame,self.objectID)
-
-                    if detectado:
-                        label = "here"
-                        x1, y1, x2, y2 = rectangulo
-                        cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
-                        cv2.putText(frame, label, (x1, y1 - 10),
-                                   cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
-
-                cv2.imshow("Frame", frame)
-
-                # Exit on 'q' key press
-                if cv2.waitKey(1) & 0xFF == ord('q'):
-                    break
-            except asyncio.TimeoutError:
-                print("Timeout waiting for frame, continuing...")
-            except Exception as e:
-                print(f"Error in handle_track: {str(e)}")
-                if "Connection" in str(e):
-                    break
-        print("Exiting handle_track")
-
-
-async def run(pc, signaling):
-    await signaling.connect()
-
-    @pc.on("track")
-    def on_track(track):
-        if isinstance(track, MediaStreamTrack):
-            print(f"Receiving {track.kind} track")
-            asyncio.ensure_future(video_receiver.handle_track(track))
-
-    @pc.on("datachannel")
-    def on_datachannel(channel):
-        print(f"Data channel established: {channel.label}")
-
-    @pc.on("connectionstatechange")
-    async def on_connectionstatechange():
-        print(f"Connection state is {pc.connectionState}")
-        if pc.connectionState == "connected":
-            print("WebRTC connection established successfully")
-
-    print("Waiting for offer from sender...")
-    offer = await signaling.receive()
-    print("Offer received")
-    await pc.setRemoteDescription(offer)
-    print("Remote description set")
-
-    answer = await pc.createAnswer()
-    print("Answer created")
-    await pc.setLocalDescription(answer)
-    print("Local description set")
-
-    await signaling.send(pc.localDescription)
-    print("Answer sent to sender")
-
-    print("Waiting for connection to be established...")
-    while pc.connectionState != "connected":
-        await asyncio.sleep(0.1)
-
-    print("Connection established, waiting for frames...")
-    await asyncio.sleep(100)  # Wait for 35 seconds to receive frames
-
-    print("Closing connection")
+    
 
 
 async def videoReceiver():
@@ -422,6 +360,7 @@ def coche():
 def moto():
     if video_receiver:
         video_receiver.setObject(3)
+    
 
 
 def create_fire_circle_icon(size=20):
@@ -611,13 +550,57 @@ def showTelemetryInfo(telemetry_info):
 
 def connect():
     global dron, speedSldr
-    connection_string = 'tcp:127.0.0.1:5763'
-    baud = 115200
-    dron.connect(connection_string, baud)
-    connectBtn['text'] = 'Conectado'
-    connectBtn['fg'] = 'white'
-    connectBtn['bg'] = 'green'
-    speedSldr.set(1)
+    try:
+        # Ask whether to connect to simulation or to a real scenario (COM)
+        respuesta = messagebox.askquestion(
+            'Tipo de conexión',
+            "¿Conectar a la SIMULACIÓN?\nSí = Simulación (tcp:127.0.0.1:5763, baud 115200)\nNo = Escenario (Puerto COM, baud 57600)"
+        )
+
+        if respuesta == 'yes':
+            connection_string = 'tcp:127.0.0.1:5763'
+            baud = 115200
+        else:
+            # Ask for COM port. Accept number (e.g. '3') or full name ('COM3' or 'com 3').
+            com_input = simpledialog.askstring('Puerto COM', "Introduce el puerto COM (ej. 'COM3' o solo el número '3'):")
+            if com_input is None:
+                # User cancelled
+                return
+            com_input = com_input.strip()
+            if com_input == '':
+                return
+            # Normalize: remove spaces and uppercase
+            com_norm = com_input.replace(' ', '').upper()
+            if com_norm.isdigit():
+                connection_string = f'COM{com_norm}'
+            elif com_norm.startswith('COM') and com_norm[3:].isdigit():
+                connection_string = com_norm
+            else:
+                # If not valid, inform the user and abort
+                messagebox.showerror('Puerto COM inválido', f"Puerto COM inválido: '{com_input}'")
+                return
+            baud = 57600
+
+        # Try to connect and handle possible failures
+        try:
+            dron.connect(connection_string, baud)
+        except Exception as e:
+            messagebox.showerror('Conexión fallida', f'No se pudo conectar a {connection_string} (baud {baud}): {e}')
+            return
+
+        connectBtn['text'] = 'Conectado'
+        connectBtn['fg'] = 'white'
+        connectBtn['bg'] = 'green'
+        try:
+            speedSldr.set(1)
+        except Exception:
+            pass
+    except Exception as e:
+        # unexpected error in UI flow
+        try:
+            messagebox.showerror('Error', f'Error en proceso de conexión: {e}')
+        except Exception:
+            pass
 
 
 def arm():
@@ -834,6 +817,7 @@ def crear_ventana():
     # Video receive button (WebRTC)
     videoBtn = tk.Button(left_frame, text='Recibir video por WebRTC', bg='dark orange', command=lambda: threading.Thread(target=videoThread, daemon=True).start())
     videoBtn.grid(row=10, column=0, columnspan=3, padx=5, pady=5, sticky='ew')
+
 
     # Detection buttons (examples)
     detectFrame = tk.LabelFrame(left_frame, text='Detección de objetos')
@@ -1098,4 +1082,27 @@ def crear_ventana():
 
 if __name__ == '__main__':
     ventana = crear_ventana()
+    # Check for command-line args passed by launcher
+    try:
+        mode = None
+        com = None
+        argv = sys.argv[1:]
+        if argv:
+            # simple arg parsing: --mode sim  or --mode esc --com COM3
+            i = 0
+            while i < len(argv):
+                a = argv[i]
+                if a == '--mode' and i+1 < len(argv):
+                    mode = argv[i+1]
+                    i += 2
+                elif a == '--com' and i+1 < len(argv):
+                    com = argv[i+1]
+                    i += 2
+                else:
+                    i += 1
+        if mode:
+            # schedule connect after mainloop starts to avoid UI race
+            ventana.after(200, lambda: connect_auto(mode, com))
+    except Exception:
+        pass
     ventana.mainloop()

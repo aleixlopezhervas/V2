@@ -165,27 +165,56 @@ def video ():
 
 def platano ():
     global video_receiver
-    video_receiver.setObject(46)
+    if 46 in video_receiver.objectIDs:
+        video_receiver.removeObject(46)
+    else:
+        video_receiver.addObject(46)
+    print(f'Objetos seleccionados: {video_receiver.objectIDs}')
 
 
 def clock ():
-    video_receiver.setObject(74)
+    global video_receiver
+    if 74 in video_receiver.objectIDs:
+        video_receiver.removeObject(74)
+    else:
+        video_receiver.addObject(74)
+    print(f'Objetos seleccionados: {video_receiver.objectIDs}')
 
 
 def pizza ():
-    video_receiver.setObject(53)
+    global video_receiver
+    if 53 in video_receiver.objectIDs:
+        video_receiver.removeObject(53)
+    else:
+        video_receiver.addObject(53)
+    print(f'Objetos seleccionados: {video_receiver.objectIDs}')
 
 
 def avion ():
-    video_receiver.setObject(4)
+    global video_receiver
+    if 4 in video_receiver.objectIDs:
+        video_receiver.removeObject(4)
+    else:
+        video_receiver.addObject(4)
+    print(f'Objetos seleccionados: {video_receiver.objectIDs}')
 
 
 def coche ():
-    video_receiver.setObject(2)
+    global video_receiver
+    if 2 in video_receiver.objectIDs:
+        video_receiver.removeObject(2)
+    else:
+        video_receiver.addObject(2)
+    print(f'Objetos seleccionados: {video_receiver.objectIDs}')
 
 
 def moto ():
-    video_receiver.setObject(3)
+    global video_receiver
+    if 3 in video_receiver.objectIDs:
+        video_receiver.removeObject(3)
+    else:
+        video_receiver.addObject(3)
+    print(f'Objetos seleccionados: {video_receiver.objectIDs}')
 
 
 # ------------------ Video receive/ detection (copied from DashboardLocalConDeteccion.py) ------------------
@@ -218,19 +247,45 @@ class Detector:
 
 
 class VideoReceiver:
+    # Mapeo de IDs YOLO a nombres de objetos
+    OBJECT_NAMES = {
+        0: 'Persona',
+        1: 'Bicicleta',
+        2: 'Coche',
+        3: 'Moto',
+        4: 'Avión',
+        5: 'Autobús',
+        39: 'Botella',
+        41: 'Taza',
+        46: 'Plátano',
+        53: 'Pizza',
+        74: 'Reloj'
+    }
+    
     def __init__(self):
         self.track = None
         self.detector = Detector()
-        self.objectID = None
+        self.objectIDs = []  # Lista de IDs de objetos a detectar
 
-    def setObject(self, objectID):
-        self.objectID = objectID
+    def setObjects(self, objectIDs):
+        """Set list of objects to detect"""
+        self.objectIDs = objectIDs
+
+    def addObject(self, objectID):
+        """Añadir un objeto a la lista de detección"""
+        if objectID not in self.objectIDs:
+            self.objectIDs.append(objectID)
+
+    def removeObject(self, objectID):
+        """Eliminar un objeto de la lista de detección"""
+        if objectID in self.objectIDs:
+            self.objectIDs.remove(objectID)
 
     async def handle_track(self, track):
         print("Inside handle track")
         self.track = track
         frame_count = 0
-        detectado = False
+        detection_cache = {}  # Caché para mostrar detecciones más tiempo
         while True:
             try:
                 frame = await asyncio.wait_for(track.recv(), timeout=5.0)
@@ -242,14 +297,25 @@ class VideoReceiver:
                 else:
                     continue
 
-                if self.objectID:
+                # Limpiar cache antiguo (más de 30 frames de antigüedad)
+                detection_cache = {k: v for k, v in detection_cache.items() if frame_count - v['frame'] < 30}
+
+                # Detect all selected objects (cada 15 frames)
+                if self.objectIDs:
                     if frame_count % 15 == 0:
-                        detectado, rectangulo = self.detector.detect(frame, self.objectID)
-                    if detectado and rectangulo:
-                        label = 'here'
-                        x1, y1, x2, y2 = rectangulo
-                        cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
-                        cv2.putText(frame, label, (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+                        for objectID in self.objectIDs:
+                            detectado, rectangulo = self.detector.detect(frame, objectID)
+                            if detectado and rectangulo:
+                                detection_cache[objectID] = {'rect': rectangulo, 'frame': frame_count}
+
+                # Dibujar todas las detecciones cacheadas
+                for objectID, detection_info in detection_cache.items():
+                    x1, y1, x2, y2 = detection_info['rect']
+                    # Rectángulo verde
+                    cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
+                    # Texto con nombre del objeto
+                    object_name = self.OBJECT_NAMES.get(objectID, f'ID:{objectID}')
+                    cv2.putText(frame, object_name, (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
 
                 cv2.imshow('Frame', frame)
                 if cv2.waitKey(1) & 0xFF == ord('q'):
@@ -823,25 +889,42 @@ def crear_ventana():
     detectFrame = tk.LabelFrame(left_frame, text='Detección de objetos')
     detectFrame.grid(row=11, column=0, columnspan=3, padx=5, pady=5, sticky='ew')
     detectFrame.rowconfigure(0, weight=1)
+    detectFrame.rowconfigure(1, weight=1)
     detectFrame.columnconfigure(0, weight=1)
     detectFrame.columnconfigure(1, weight=1)
     detectFrame.columnconfigure(2, weight=1)
 
-    bananaBtn = tk.Button(detectFrame, text='Banana', bg='dark orange', command=lambda: platano())
-    bananaBtn.grid(row=0, column=0, padx=5, pady=5, sticky='ew')
-    raquetaBtn = tk.Button(detectFrame, text='Reloj', bg='dark orange', command=lambda: clock())
-    raquetaBtn.grid(row=0, column=1, padx=5, pady=5, sticky='ew')
-    pizzaBtn = tk.Button(detectFrame, text='Pizza', bg='dark orange', command=lambda: pizza())
-    pizzaBtn.grid(row=0, column=2, padx=5, pady=5, sticky='ew')
+    # Crear botones con toggle visual
+    def make_toggle_button(frame, text, objectID, row, col):
+        """Crear botón que togglea la selección de objeto"""
+        btn_state = {'selected': False}
+        def toggle_object():
+            setDetectionObject(objectID)
+            btn_state['selected'] = not btn_state['selected']
+            btn['bg'] = 'green' if btn_state['selected'] else 'light blue'
+            btn['fg'] = 'white' if btn_state['selected'] else 'black'
+        
+        btn = tk.Button(frame, text=text, bg='light blue', command=toggle_object)
+        btn.grid(row=row, column=col, padx=5, pady=5, sticky='ew')
+        return btn
+    
+    def setDetectionObject(objectID):
+        """Toggle object selection for detection"""
+        global video_receiver
+        if video_receiver and hasattr(video_receiver, 'objectIDs'):
+            if objectID in video_receiver.objectIDs:
+                video_receiver.removeObject(objectID)
+            else:
+                video_receiver.addObject(objectID)
+            print(f'Objetos seleccionados: {video_receiver.objectIDs}')
 
-    # second row of detection buttons
-    detectFrame.rowconfigure(1, weight=1)
-    avionBtn = tk.Button(detectFrame, text='Avion', bg='dark orange', command=lambda: avion())
-    avionBtn.grid(row=1, column=0, padx=5, pady=5, sticky='ew')
-    cocheBtn = tk.Button(detectFrame, text='Coche', bg='dark orange', command=lambda: coche())
-    cocheBtn.grid(row=1, column=1, padx=5, pady=5, sticky='ew')
-    MotoBtn = tk.Button(detectFrame, text='Moto', bg='dark orange', command=lambda: moto())
-    MotoBtn.grid(row=1, column=2, padx=5, pady=5, sticky='ew')
+    bananaBtn = make_toggle_button(detectFrame, "Plátano", 46, 0, 0)
+    clockBtn = make_toggle_button(detectFrame, "Reloj", 74, 0, 1)
+    pizzaBtn = make_toggle_button(detectFrame, "Pizza", 53, 0, 2)
+
+    avionBtn = make_toggle_button(detectFrame, "Avión", 4, 1, 0)
+    cocheBtn = make_toggle_button(detectFrame, "Coche", 2, 1, 1)
+    motoBtn = make_toggle_button(detectFrame, "Moto", 3, 1, 2)
 
     # Initialize map in right_frame
     global map_widget

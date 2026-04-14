@@ -45,6 +45,7 @@ center_enabled = True
 
 # Video/detection globals
 video_receiver = None
+selected_objects = []  # List of currently selected object IDs for detection
 
 usuario = "aleix"
 
@@ -297,19 +298,35 @@ class Detector:
 
 
 class VideoReceiver:
+    # Mapeo de IDs YOLO a nombres de objetos
+    OBJECT_NAMES = {
+        0: 'Persona',
+        1: 'Bicicleta',
+        2: 'Coche',
+        3: 'Moto',
+        4: 'Avión',
+        5: 'Autobús',
+        39: 'Botella',
+        41: 'Taza',
+        46: 'Plátano',
+        53: 'Pizza',
+        74: 'Reloj'
+    }
+    
     def __init__(self):
         self.track = None
         self.detector = Detector()
-        self.objectID = None
+        self.objectIDs = []  # List of object IDs to detect
 
-    def setObject(self, objectID):
-        self.objectID = objectID
+    def setObjects(self, objectIDs):
+        """Set list of objects to detect"""
+        self.objectIDs = objectIDs
 
     async def handle_track(self, track):
         print("Video receiver: Handling track")
         self.track = track
         frame_count = 0
-        detectado = False
+        detection_cache = {}  # Cache para mostrar detecciones más tiempo
         while True:
             try:
                 frame = await asyncio.wait_for(track.recv(), timeout=5.0)
@@ -321,14 +338,25 @@ class VideoReceiver:
                 else:
                     continue
 
-                if self.objectID:
+                # Limpiar cache antiguo (más de 30 frames de antigüedad)
+                detection_cache = {k: v for k, v in detection_cache.items() if frame_count - v['frame'] < 30}
+
+                # Detect all selected objects (cada 15 frames)
+                if self.objectIDs:
                     if frame_count % 15 == 0:
-                        detectado, rectangulo = self.detector.detect(frame, self.objectID)
-                    if detectado and rectangulo:
-                        label = 'Detected'
-                        x1, y1, x2, y2 = rectangulo
-                        cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
-                        cv2.putText(frame, label, (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+                        for objectID in self.objectIDs:
+                            detectado, rectangulo = self.detector.detect(frame, objectID)
+                            if detectado and rectangulo:
+                                detection_cache[objectID] = {'rect': rectangulo, 'frame': frame_count}
+
+                # Dibujar todas las detecciones cacheadas
+                for objectID, detection_info in detection_cache.items():
+                    x1, y1, x2, y2 = detection_info['rect']
+                    # Rectángulo verde
+                    cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
+                    # Texto con nombre del objeto
+                    object_name = self.OBJECT_NAMES.get(objectID, f'ID:{objectID}')
+                    cv2.putText(frame, object_name, (x1, y1-10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
 
                 cv2.imshow('Video Stream', frame)
                 if cv2.waitKey(1) & 0xFF == ord('q'):
@@ -392,9 +420,18 @@ def start_video():
 
 
 def setDetectionObject(objectID):
-    global video_receiver
+    """Toggle object selection for detection"""
+    global video_receiver, selected_objects
+    if objectID in selected_objects:
+        selected_objects.remove(objectID)
+    else:
+        selected_objects.append(objectID)
+    
+    # Update video receiver with new list
     if video_receiver:
-        video_receiver.setObject(objectID)
+        video_receiver.setObjects(selected_objects)
+    
+    print(f'Selected objects: {selected_objects}')
 
 
 def detect_person():
@@ -720,19 +757,27 @@ def crear_ventana():
     detectFrame.columnconfigure(1, weight=1)
     detectFrame.columnconfigure(2, weight=1)
 
-    platano_btn = tk.Button(detectFrame, text='Plátano', bg='light blue', command=platano)
-    platano_btn.grid(row=0, column=0, padx=2, pady=2, sticky='ew')
-    clock_btn = tk.Button(detectFrame, text='Reloj', bg='light blue', command=clock)
-    clock_btn.grid(row=0, column=1, padx=2, pady=2, sticky='ew')
-    pizza_btn = tk.Button(detectFrame, text='Pizza', bg='light blue', command=pizza)
-    pizza_btn.grid(row=0, column=2, padx=2, pady=2, sticky='ew')
+    # Create buttons with toggle functionality
+    def make_toggle_button(frame, text, objectID, row, col):
+        """Create a button that toggles object selection"""
+        btn_state = {'selected': False}
+        def toggle_object():
+            setDetectionObject(objectID)
+            btn_state['selected'] = not btn_state['selected']
+            btn['bg'] = 'green' if btn_state['selected'] else 'light blue'
+            btn['fg'] = 'white' if btn_state['selected'] else 'black'
+        
+        btn = tk.Button(frame, text=text, bg='light blue', command=toggle_object)
+        btn.grid(row=row, column=col, padx=2, pady=2, sticky='ew')
+        return btn
 
-    detect_airplane_btn = tk.Button(detectFrame, text='Avión', bg='light blue', command=detect_airplane)
-    detect_airplane_btn.grid(row=1, column=0, padx=2, pady=2, sticky='ew')
-    detect_car_btn = tk.Button(detectFrame, text='Coche', bg='light blue', command=detect_car)
-    detect_car_btn.grid(row=1, column=1, padx=2, pady=2, sticky='ew')
-    detect_motorcycle_btn = tk.Button(detectFrame, text='Moto', bg='light blue', command=detect_motorcycle)
-    detect_motorcycle_btn.grid(row=1, column=2, padx=2, pady=2, sticky='ew')
+    platano_btn = make_toggle_button(detectFrame, 'Plátano', 46, 0, 0)
+    clock_btn = make_toggle_button(detectFrame, 'Reloj', 74, 0, 1)
+    pizza_btn = make_toggle_button(detectFrame, 'Pizza', 53, 0, 2)
+
+    detect_airplane_btn = make_toggle_button(detectFrame, 'Avión', 4, 1, 0)
+    detect_car_btn = make_toggle_button(detectFrame, 'Coche', 2, 1, 1)
+    detect_motorcycle_btn = make_toggle_button(detectFrame, 'Moto', 3, 1, 2)
 
     # RIGHT FRAME MAP
     if MAP_AVAILABLE:

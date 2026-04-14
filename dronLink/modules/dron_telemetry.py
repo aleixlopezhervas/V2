@@ -1,5 +1,3 @@
-
-import math
 import threading
 import time
 
@@ -24,7 +22,12 @@ def _send_telemetry_info(self, process_telemetry_info):
             process_telemetry_info (telemetry_info)
         else:
             process_telemetry_info (self.id, telemetry_info)
-        time.sleep(1/self.frequency)
+        # avoid crash when self.frequency is None; default to 1 Hz
+        try:
+            freq = float(self.frequency) if getattr(self, 'frequency', None) else 1.0
+        except Exception:
+            freq = 1.0
+        time.sleep(1.0 / freq)
 
 def send_telemetry_info(self, process_telemetry_info):
     telemetryThread = threading.Thread(target=self._send_telemetry_info, args=[process_telemetry_info,])
@@ -32,3 +35,4 @@ def send_telemetry_info(self, process_telemetry_info):
 
 def stop_sending_telemetry_info(self):
     self.sendTelemetryInfo = False
+

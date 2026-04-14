@@ -76,6 +76,25 @@ def on_message(cli, userdata, message):
             speed = float(message.payload.decode("utf-8"))
             dron.changeNavSpeed(float(speed))
 
+    if command == 'goTo':
+        print(f'[DEBUG] Recibido comando goTo, estado del dron: {dron.state}')
+        try:
+            payload = json.loads(message.payload.decode("utf-8"))
+            lat = payload.get('lat')
+            lon = payload.get('lon')
+            alt = payload.get('alt', 10.0)
+            print(f'[DEBUG] goTo -> lat={lat}, lon={lon}, alt={alt}')
+            if lat is not None and lon is not None:
+                if dron.state == 'flying':
+                    print(f'[DEBUG] Dron volando, ejecutando goto')
+                    dron.goto(lat, lon, alt, blocking=False)
+                else:
+                    print(f'[DEBUG] Dron no está volando (estado={dron.state}), no se puede hacer goto')
+        except Exception as e:
+            print(f'[ERROR] Error procesando goTo: {e}')
+            import traceback
+            traceback.print_exc()
+
 
 def on_connect(client, userdata, flags, rc):
     global connected

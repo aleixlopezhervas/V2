@@ -571,7 +571,7 @@ def crear_ventana():
             tk.Label(layer_frame, text='Vista:').pack(side='left')
             tk.OptionMenu(layer_frame, layerVar, 'Streets', 'Satellite', command=change_map_layer).pack(side='left')
 
-            # Map click handler
+            # Map click handler - publish MQTT goTo command (Global mode uses MQTT, not direct dron.goto)
             def _on_map_click(data):
                 try:
                     if isinstance(data, (list, tuple)):
@@ -599,10 +599,11 @@ def crear_ventana():
                     except Exception:
                         return
 
+                # Get current altitude from telemetry label
                 try:
                     current_alt = None
                     try:
-                        current_alt = float(dron.alt)
+                        current_alt = float(altShowLbl['text'])
                     except Exception:
                         current_alt = None
                     if current_alt is None or current_alt == 0:
@@ -610,8 +611,11 @@ def crear_ventana():
                 except Exception:
                     current_alt = 10.0
 
+                # Publish MQTT goTo command to AutopilotService
                 try:
-                    dron.goto(lat, lon, current_alt, blocking=False)
+                    payload = json.dumps({'lat': lat, 'lon': lon, 'alt': current_alt})
+                    client.publish(f'{usuario}/autopilotServiceDemo/goTo', payload)
+                    # Show overlay with coordinates
                     try:
                         if hasattr(map_widget, '_coord_overlay') and map_widget._coord_overlay:
                             try:
@@ -629,11 +633,7 @@ def crear_ventana():
                     except Exception:
                         pass
                 except Exception:
-                    try:
-                        payload = json.dumps({'lat': lat, 'lon': lon, 'alt': current_alt})
-                        client.publish(f'autopilotServiceDemo/{usuario}/goTo', payload)
-                    except Exception:
-                        pass
+                    pass
 
             try:
                 if hasattr(map_widget, 'add_left_click_map_command'):

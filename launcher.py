@@ -118,31 +118,11 @@ class LauncherApp:
         self._start_process('local', 'DashboardLocalPython.py')
 
     def start_global(self):
-        # Start AutopilotService first, then DashboardGlobalPython
-        # If autopilot already running, don't start another
-        if not (self.processes.get('autopilot') and self.processes['autopilot'].poll() is None):
-            self._start_process('autopilot', 'AutopilotService.py')
-        else:
-            self._log('AutopilotService ya se estaba ejecutando.')
-
-        # Ask connection mode (simulation vs escenario with COM) before starting services
-        mode_args = self._ask_connection_mode()
-        if mode_args is None:
-            self._log('Inicio de modo global cancelado por el usuario.')
-            return
-
-        in_use, pid = self._is_port_in_use(9999)
-        if in_use:
-            self._log(f'Puerto 9999 ya en uso (pid={pid}); no se iniciará otra instancia de CameraService.')
-        else:
-            if not (self.processes.get('camera') and self.processes['camera'].poll() is None):
-                self._start_process('camera', 'CameraService.py')
-            else:
-                self._log('CameraService ya se estaba ejecutando.')
-
-        # Start the global dashboard after background services
-        # Note: pass mode args to global dashboard as well for consistency
-        self._start_process('global', 'DashboardGlobalPython.py', args=mode_args)
+        # MODO GLOBAL: Solo iniciar DashboardGlobalPython
+        # AutopilotService y CameraService deben estar ejecutándose en otro portátil (LOCAL)
+        self._log('Iniciando modo global...')
+        self._log('Nota: AutopilotService y CameraService deben estar corriendo en el portátil LOCAL.')
+        self._start_process('global', 'DashboardGlobalPython.py')
 
     def _ask_connection_mode(self):
         """Ask the user whether to connect to simulation or a real scenario (COM). Returns a list of args or None if cancelled."""

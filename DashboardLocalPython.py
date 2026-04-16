@@ -65,17 +65,17 @@ def _do_connect(connection_string, baud):
 
 def connect_auto(mode, com=None):
     """Programmatic connect used when dashboard is started with args from launcher.
-    mode: 'sim' or 'esc'. If 'esc', com must be provided like 'COM3'."""
+    mode: 'sim' or 'esc'. If 'esc', com must be provided like 'COM3'.
+    Ambos modos conectan a través de MAVProxy vía UDP."""
     if mode is None:
         return
-    if mode == 'sim':
-        connection_string = 'tcp:127.0.0.1:5763'
+    # Ambos modos (simulación y escenario) usan MAVProxy en UDP
+    # Ejecutar manualmente en PowerShell antes de iniciar:
+    # Para simulación: mavproxy --master=tcp:127.0.0.1:5763 --out=udp:127.0.0.1:14550 --out=udp:127.0.0.1:14551
+    # Para COM real: mavproxy --master=COM5 --out=udp:127.0.0.1:14550 --out=udp:127.0.0.1:14551
+    if mode == 'sim' or mode == 'esc':
+        connection_string = 'udp:127.0.0.1:14551'
         baud = 115200
-    elif mode == 'esc':
-        if not com:
-            return
-        connection_string = com
-        baud = 57600
     else:
         return
     _do_connect(connection_string, baud)
@@ -139,8 +139,19 @@ class Detector:
 
 async def videoReceiver():
     # el receptor actua de cliente que debe conectarse al emisor que actua de servidor
-    IP_server = "localhost"
-    signaling = TcpSocketSignaling(IP_server, 9999)
+    # Para misma LAN: detecta automáticamente la IP del servidor
+    try:
+        from config_webrtc import get_config
+        config = get_config()
+        IP_server = config['dashboard_local']['camera_server']
+        port = config['dashboard_local']['camera_port']
+    except (ImportError, KeyError):
+        # Fallback si no está configurado
+        IP_server = "127.0.0.1"
+        port = 9999
+    
+    print(f"[VIDEO] Intentando conectarse a {IP_server}:{port}")
+    signaling = TcpSocketSignaling(IP_server, port)
     pc = RTCPeerConnection()
 
     global video_receiver
@@ -617,44 +628,33 @@ def showTelemetryInfo(telemetry_info):
 def connect():
     global dron, speedSldr
     try:
-        # Ask whether to connect to simulation or to a real scenario (COM)
         respuesta = messagebox.askquestion(
-            'Tipo de conexión',
-            "¿Conectar a la SIMULACIÓN?\nSí = Simulación (tcp:127.0.0.1:5763, baud 115200)\nNo = Escenario (Puerto COM, baud 57600)"
+            '🚁 Seleccionar Modo de Conexión',
+            "¿Qué quieres conectar?\n\n" +
+            "🖥️  SÍ = SIMULADOR (Software, sin dron físico)\n" +
+            "📡 NO = DRON REAL (Dron físico con radio)\n\n" +
+            "ℹ️  Nota: Asegúrate de tener MAVProxy ejecutándose"
         )
 
-        if respuesta == 'yes':
-            connection_string = 'tcp:127.0.0.1:5763'
-            baud = 115200
-        else:
-            # Ask for COM port. Accept number (e.g. '3') or full name ('COM3' or 'com 3').
-            com_input = simpledialog.askstring('Puerto COM', "Introduce el puerto COM (ej. 'COM3' o solo el número '3'):")
-            if com_input is None:
-                # User cancelled
-                return
-            com_input = com_input.strip()
-            if com_input == '':
-                return
-            # Normalize: remove spaces and uppercase
-            com_norm = com_input.replace(' ', '').upper()
-            if com_norm.isdigit():
-                connection_string = f'COM{com_norm}'
-            elif com_norm.startswith('COM') and com_norm[3:].isdigit():
-                connection_string = com_norm
-            else:
-                # If not valid, inform the user and abort
-                messagebox.showerror('Puerto COM inválido', f"Puerto COM inválido: '{com_input}'")
-                return
-            baud = 57600
+        # Ambos modos usan MAVProxy vía UDP en el mismo puerto
+        connection_string = 'udp:127.0.0.1:14551'
+        baud = 115200
 
         # Try to connect and handle possible failures
         try:
             dron.connect(connection_string, baud)
         except Exception as e:
-            messagebox.showerror('Conexión fallida', f'No se pudo conectar a {connection_string} (baud {baud}): {e}')
+            messagebox.showerror(
+                '❌ Conexión Fallida',
+                f'No se pudo conectar.\n\n' +
+                f'Asegúrate de que:\n' +
+                f'1. MAVProxy está ejecutándose\n' +
+                f'2. La radio/simulador está conectado\n\n' +
+                f'Error: {e}'
+            )
             return
 
-        connectBtn['text'] = 'Conectado'
+        connectBtn['text'] = '✅ Conectado'
         connectBtn['fg'] = 'white'
         connectBtn['bg'] = 'green'
         try:
@@ -662,9 +662,8 @@ def connect():
         except Exception:
             pass
     except Exception as e:
-        # unexpected error in UI flow
         try:
-            messagebox.showerror('Error', f'Error en proceso de conexión: {e}')
+            messagebox.showerror('❌ Error', f'Error en proceso de conexión: {e}')
         except Exception:
             pass
 
@@ -785,13 +784,13 @@ def crear_ventana():
     ventana.rowconfigure(0, weight=1)
 
     # Controls
-    connectBtn = tk.Button(left_frame, text='Conectar', bg='dark orange', command=connect)
+    connectBtn = tk.Button(left_frame, text='📡 Conectar', bg='dark orange', command=connect)
     connectBtn.grid(row=0, column=0, columnspan=2, padx=5, pady=5, sticky='ew')
 
-    armBtn = tk.Button(left_frame, text='Armar', bg='dark orange', command=arm)
+    armBtn = tk.Button(left_frame, text='🔒 Armar', bg='dark orange', command=arm)
     armBtn.grid(row=1, column=0, columnspan=2, padx=5, pady=5, sticky='ew')
 
-    takeOffBtn = tk.Button(left_frame, text='Despegar', bg='dark orange', command=takeoff)
+    takeOffBtn = tk.Button(left_frame, text='✈️ Despegar', bg='dark orange', command=takeoff)
     takeOffBtn.grid(row=2, column=0, columnspan=2, padx=5, pady=5, sticky='ew')
 
     def toggle_center():

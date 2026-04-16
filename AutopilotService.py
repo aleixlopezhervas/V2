@@ -32,7 +32,12 @@ def on_message(cli, userdata, message):
     sending_topic = "autopilotServiceDemo/" + origin # lo necesitaré para enviar las respuestas
 
     if command == 'connect':
-        connection_string = 'tcp:127.0.0.1:5763'
+        # Conectar a través de MAVProxy (UDP)
+        # Nota: Ejecutar manualmente en PowerShell:
+        # mavproxy --master=tcp:127.0.0.1:5763 --out=udp:127.0.0.1:14550 --out=udp:127.0.0.1:14551
+        # o para COM real:
+        # mavproxy --master=COM5 --out=udp:127.0.0.1:14550 --out=udp:127.0.0.1:14551
+        connection_string = 'udp:127.0.0.1:14550'
         baud = 115200
         dron.connect(connection_string, baud, freq=10)
         publish_event('connected')

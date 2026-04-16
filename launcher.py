@@ -7,6 +7,9 @@ from tkinter import messagebox, scrolledtext, simpledialog
 
 BASE_DIR = os.path.dirname(__file__)
 
+# MAVProxy SIMULACIÓN: mavproxy --master=tcp:127.0.0.1:5763 --out=udp:127.0.0.1:14550 --out=udp:127.0.0.1:14551
+# MAVProxy REALIDAD: mavproxy --master=COM5 --baudrate=57600 --out=udp:127.0.0.1:14550 --out=udp:127.0.0.1:14551
+
 
 class LauncherApp:
     def __init__(self, master):

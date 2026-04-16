@@ -371,8 +371,19 @@ class VideoReceiver:
 
 
 async def videoReceiver_main():
-    IP_server = "localhost"
-    signaling = TcpSocketSignaling(IP_server, 9999)
+    # Para misma LAN: detecta automáticamente la IP del servidor
+    try:
+        from config_webrtc import get_config
+        config = get_config()
+        IP_server = config['dashboard_global']['camera_server']
+        port = config['dashboard_global']['camera_port']
+    except (ImportError, KeyError):
+        # Fallback si no está configurado
+        IP_server = "127.0.0.1"
+        port = 9999
+    
+    print(f"[VIDEO] Intentando conectarse a {IP_server}:{port}")
+    signaling = TcpSocketSignaling(IP_server, port)
     pc = RTCPeerConnection()
 
     global video_receiver
@@ -484,11 +495,19 @@ def pizza():
 def connect():
     global dron, speedSldr
     try:
+        from tkinter import messagebox
+        messagebox.showinfo(
+            '📡 Conectando...',
+            'Se está enviando comando de conexión\n' +
+            'al modo Local mediante MQTT.\n\n' +
+            'Espera a que el indicador pase\n' +
+            'de 🔴 Desconectado a 🟢 Conectado'
+        )
         client.publish(f'{usuario}/autopilotServiceDemo/connect')
     except Exception:
         pass
     try:
-        connectBtn['text'] = 'Conectado'
+        connectBtn['text'] = '✅ Conectado'
         connectBtn['fg'] = 'white'
         connectBtn['bg'] = 'green'
         speedSldr.set(1)
@@ -660,18 +679,18 @@ def crear_ventana():
     ventana.rowconfigure(0, weight=1)
 
     # LEFT FRAME CONTROLS
-    connectBtn = tk.Button(left_frame, text='Conectar', bg='dark orange', command=connect)
+    connectBtn = tk.Button(left_frame, text='📡 Conectar', bg='dark orange', command=connect)
     connectBtn.grid(row=0, column=0, columnspan=2, padx=5, pady=5, sticky='ew')
 
-    arm_takeOffBtn = tk.Button(left_frame, text='Despegar', bg='dark orange', command=takeoff)
+    arm_takeOffBtn = tk.Button(left_frame, text='✈️ Despegar', bg='dark orange', command=takeoff)
     arm_takeOffBtn.grid(row=1, column=0, columnspan=2, padx=5, pady=5, sticky='ew')
 
     def toggle_center():
         global center_enabled
         center_enabled = not center_enabled
-        btn_centrar['text'] = 'Centrar: ON' if center_enabled else 'Centrar: OFF'
+        btn_centrar['text'] = '📍 Centrar: ON' if center_enabled else '📍 Centrar: OFF'
 
-    btn_centrar = tk.Button(left_frame, text='Centrar: ON', width=12, command=toggle_center)
+    btn_centrar = tk.Button(left_frame, text='📍 Centrar: ON', width=12, command=toggle_center)
     btn_centrar.grid(row=2, column=0, columnspan=2, padx=5, pady=5, sticky='ew')
 
     gradesSldr = tk.Scale(left_frame, label='Grados:', resolution=5, from_=0, to=360, orient=tk.HORIZONTAL)
@@ -679,9 +698,9 @@ def crear_ventana():
     gradesSldr.set(180)
     gradesSldr.bind('<ButtonRelease-1>', changeHeading)
 
-    landBtn = tk.Button(left_frame, text='Aterrizar', bg='dark orange', command=land)
+    landBtn = tk.Button(left_frame, text='🛬 Aterrizar', bg='dark orange', command=land)
     landBtn.grid(row=4, column=0, padx=5, pady=5, sticky='ew')
-    RTLBtn = tk.Button(left_frame, text='RTL', bg='dark orange', command=RTL)
+    RTLBtn = tk.Button(left_frame, text='🏠 RTL', bg='dark orange', command=RTL)
     RTLBtn.grid(row=4, column=1, padx=5, pady=5, sticky='ew')
 
     navFrame = tk.LabelFrame(left_frame, text='Navegación', bd=0, relief=tk.FLAT)

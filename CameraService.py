@@ -10,6 +10,31 @@ from aiortc import RTCPeerConnection, RTCSessionDescription, VideoStreamTrack
 from aiortc.contrib.signaling import TcpSocketSignaling
 from av import VideoFrame
 import fractions
+import sys
+
+try:
+    from config_webrtc import get_local_ip, get_config
+except ImportError:
+    def get_local_ip():
+        """Fallback si no está config_webrtc.py"""
+        import socket
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            s.connect(("8.8.8.8", 80))
+            ip = s.getsockname()[0]
+            s.close()
+            return ip
+        except Exception:
+            return "127.0.0.1"
+    
+    def get_config():
+        return {
+            'camera_service': {
+                'host': '0.0.0.0',
+                'port': 9999,
+                'local_ip': get_local_ip()
+            }
+        }
 
 
 class CustomVideoStreamTrack(VideoStreamTrack):
@@ -67,11 +92,22 @@ async def setup_webrtc_and_run(ip_address, port, camera_id):
         await pc.close()
 
 async def main():
-    # En este caso es el emisor el que actua de servidor, exponiendo el canal de comunicación
-    # en el puerto 9999
-    ip_address = "0.0.0.0"
-    port = 9999
-    camera_id = 0  # Hay que cambiar eso en el caso de capturar el video que viene del dron
+    # Obtener configuración
+    config = get_config()
+    local_ip = config['camera_service']['local_ip']
+    ip_address = config['camera_service']['host']
+    port = config['camera_service']['port']
+    
+    # ===== HARDCODEA AQUÍ TU FUENTE DE VIDEO =====
+    camera_id = 0  # Cambiar a tu fuente (0=webcam, 1=USB, "rtsp://...", etc.)
+    
+    print(f"[CAMERA SERVICE] ============================================")
+    print(f"[CAMERA SERVICE] IP local en LAN: {local_ip}")
+    print(f"[CAMERA SERVICE] Escuchando en: {ip_address}:{port}")
+    print(f"[CAMERA SERVICE] Los clientes deben conectarse a: {local_ip}:{port}")
+    print(f"[CAMERA SERVICE] Usando fuente de video: {camera_id}")
+    print(f"[CAMERA SERVICE] ============================================")
+    
     await setup_webrtc_and_run(ip_address, port, camera_id)
 
 if __name__ == "__main__":
